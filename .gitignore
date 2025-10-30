@@ -7,3 +7,10 @@ outputs/
 *.png
 *.csv
 .vscode/
+# === synthetic outputs ===
+test_grayscale_fix/
+data/runs/
+**/preview*.png
+**/*.tif
+**/*.tif.json
+results_*.csv
