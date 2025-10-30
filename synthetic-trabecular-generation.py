@@ -63,20 +63,32 @@ def apply_grayscale(mask01, mode="none", noise_sigma=0.0, poisson=False):
     img = (mask01 * 255).astype(np.uint8)
     if mode == "none" and not noise_sigma and not poisson:
         return img
+
     H, W = mask01.shape
     arr = img.astype(np.float32)
+
     if mode == "linear_x":
-        xx = np.linspace(0,1,W)[None,:]; field = (xx*255).astype(np.float32).repeat(H,0)
-        arr = np.where(mask01>0, field, 0)
+        xx = np.linspace(0, 1, W, dtype=np.float32)[None, :]
+        field = (xx * 255).repeat(H, 0)
+        arr = field * mask01  # gradient only inside bone (white) regions
     elif mode == "linear_y":
-        yy = np.linspace(0,1,H)[:,None]; field = (yy*255).astype(np.float32).repeat(W,1)
-        arr = np.where(mask01>0, field, 0)
-    if noise_sigma and noise_sigma>0:
-        arr += np.random.normal(0, noise_sigma, arr.shape)
+        yy = np.linspace(0, 1, H, dtype=np.float32)[:, None]
+        field = (yy * 255).repeat(W, 1)
+        arr = field * mask01  # gradient only inside bone (white) regions
+    else:
+        arr = img.astype(np.float32)  # no gradient; keep binary values
+
+    # Add noise only inside the bone mask
+    if noise_sigma and noise_sigma > 0:
+        noise = np.random.normal(0, noise_sigma, arr.shape).astype(np.float32)
+        arr = np.where(mask01 > 0, arr + noise, 0)
+
     if poisson:
-        lam = np.clip(arr/255.0, 0, 1)*20.0
-        arr = np.random.poisson(lam)/20.0*255.0
-    return np.clip(arr,0,255).astype(np.uint8)
+        lam = np.clip(arr / 255.0, 0, 1) * 20.0
+        arr = np.random.poisson(lam).astype(np.float32) / 20.0 * 255.0
+        arr = np.where(mask01 > 0, arr, 0)
+
+    return np.clip(arr, 0, 255).astype(np.uint8)
 
 def append_csv(csv_path, row, header=None):
     csv_path = Path(csv_path); csv_path.parent.mkdir(parents=True, exist_ok=True)
@@ -136,6 +148,9 @@ def cmd_sweep(args):
     out.mkdir(parents=True, exist_ok=True)
     csv_path = out / "results_2d_bs_ts.csv"
 
+    # accept multiple grayscale modes (or fall back to one)
+    modes = getattr(args, "grayscale_modes", None) or [args.grayscale]
+
     for pix in args.pixel_sizes_um:
         # update global calibration for TIFF sidecar
         global PIXEL_SIZE_UM
@@ -145,78 +160,81 @@ def cmd_sweep(args):
 
         for th in args.thickness_um:
             for sp in args.spacing_um:
-                # ----------------------
-                # GRID case
-                # ----------------------
+                # =====================================================
+                # GRID PATTERN
+                # =====================================================
                 tx = um_to_px(th); gx = um_to_px(sp)
-                mask = orthotropic_grid_mask(H, W, tx, gx, tx, gx)
-                bs, ts, frac = bs_ts(mask)
+                grid_mask = orthotropic_grid_mask(H, W, tx, gx, tx, gx)
+                bs, ts, frac = bs_ts(grid_mask)
 
-                sub = out / f"pix{int(pix)}um" / f"grid_th{th}_sp{sp}"
-                sub.mkdir(parents=True, exist_ok=True)
+                base = out / f"pix{int(pix)}um" / f"grid_th{th}_sp{sp}"
+                base.mkdir(parents=True, exist_ok=True)
+                save_binary_png(grid_mask, base / "preview.png")
 
-                # binary preview
-                save_binary_png(mask, sub / "preview.png")
+                # loop over grayscale modes
+                for mode in modes:
+                    sub_gray = base / f"grayscale-{mode}"
+                    sub_gray.mkdir(parents=True, exist_ok=True)
 
-                # grayscale (optional)
-                if args.grayscale != "none" or args.noise_sigma > 0 or args.poisson:
-                    img_gray = apply_grayscale(
-                        mask,
-                        mode=args.grayscale,
-                        noise_sigma=args.noise_sigma,
-                        poisson=args.poisson
-                    )
-                    Image.fromarray(img_gray).save(sub / "preview_grayscale.png")
+                    if mode != "none" or args.noise_sigma > 0 or args.poisson:
+                        img_gray = apply_grayscale(
+                            grid_mask,
+                            mode=mode,
+                            noise_sigma=args.noise_sigma,
+                            poisson=args.poisson
+                        )
+                        Image.fromarray(img_gray).save(sub_gray / "preview_grayscale.png")
 
-                # stack + CSV
-                save_tiff_stack(mask, sub / "stack.tif",
-                                n_slices=args.slices,
-                                z_step_um=args.z_step_um)
+                    save_tiff_stack(grid_mask, sub_gray / "stack.tif",
+                                    n_slices=args.slices,
+                                    z_step_um=args.z_step_um)
 
-                append_csv(csv_path, {
-                    "name": sub.name,
-                    "pattern": "grid",
-                    "pixel_size_um": pix,
-                    "thickness_um_x": th, "spacing_um_x": sp,
-                    "thickness_um_y": th, "spacing_um_y": sp,
-                    "BS": bs, "TS": ts, "BS_TS": frac
-                })
+                    append_csv(csv_path, {
+                        "name": sub_gray.name,
+                        "pattern": "grid",
+                        "pixel_size_um": pix,
+                        "thickness_um_x": th, "spacing_um_x": sp,
+                        "thickness_um_y": th, "spacing_um_y": sp,
+                        "grayscale": mode,
+                        "BS": bs, "TS": ts, "BS_TS": frac
+                    })
 
-                # ----------------------
-                # VERTICAL case
-                # ----------------------
+                # =====================================================
+                # VERTICAL PATTERN
+                # =====================================================
                 t = um_to_px(th); g = um_to_px(sp)
-                mask = vertical_rods_mask(H, W, t, g)
-                bs, ts, frac = bs_ts(mask)
+                vert_mask = vertical_rods_mask(H, W, t, g)
+                bs, ts, frac = bs_ts(vert_mask)
 
-                sub = out / f"pix{int(pix)}um" / f"vertical_th{th}_sp{sp}"
-                sub.mkdir(parents=True, exist_ok=True)
+                base = out / f"pix{int(pix)}um" / f"vertical_th{th}_sp{sp}"
+                base.mkdir(parents=True, exist_ok=True)
+                save_binary_png(vert_mask, base / "preview.png")
 
-                # binary preview
-                save_binary_png(mask, sub / "preview.png")
+                for mode in modes:
+                    sub_gray = base / f"grayscale-{mode}"
+                    sub_gray.mkdir(parents=True, exist_ok=True)
 
-                # grayscale (optional)
-                if args.grayscale != "none" or args.noise_sigma > 0 or args.poisson:
-                    img_gray = apply_grayscale(
-                        mask,
-                        mode=args.grayscale,
-                        noise_sigma=args.noise_sigma,
-                        poisson=args.poisson
-                    )
-                    Image.fromarray(img_gray).save(sub / "preview_grayscale.png")
+                    if mode != "none" or args.noise_sigma > 0 or args.poisson:
+                        img_gray = apply_grayscale(
+                            vert_mask,
+                            mode=mode,
+                            noise_sigma=args.noise_sigma,
+                            poisson=args.poisson
+                        )
+                        Image.fromarray(img_gray).save(sub_gray / "preview_grayscale.png")
 
-                # stack + CSV
-                save_tiff_stack(mask, sub / "stack.tif",
-                                n_slices=args.slices,
-                                z_step_um=args.z_step_um)
+                    save_tiff_stack(vert_mask, sub_gray / "stack.tif",
+                                    n_slices=args.slices,
+                                    z_step_um=args.z_step_um)
 
-                append_csv(csv_path, {
-                    "name": sub.name,
-                    "pattern": "vertical",
-                    "pixel_size_um": pix,
-                    "thickness_um": th, "spacing_um": sp,
-                    "BS": bs, "TS": ts, "BS_TS": frac
-                })
+                    append_csv(csv_path, {
+                        "name": sub_gray.name,
+                        "pattern": "vertical",
+                        "pixel_size_um": pix,
+                        "thickness_um": th, "spacing_um": sp,
+                        "grayscale": mode,
+                        "BS": bs, "TS": ts, "BS_TS": frac
+                    })
 
     print(f"✓ Sweep done → {csv_path}")
 
@@ -250,6 +268,12 @@ def build_parser():
     s2.add_argument("--pixel-sizes-um", type=float, nargs="+", default=[5,10,20,30])
     s2.add_argument("--thickness-um", type=float, nargs="+", default=[100,125,150])
     s2.add_argument("--spacing-um", type=float, nargs="+", default=[300,400,500])
+
+    s2.add_argument("--grayscale-modes",
+                choices=["none", "linear_x", "linear_y"],
+                nargs="+",
+                default=["none", "linear_x", "linear_y"],
+                help="Grayscale profiles to sweep over (default: all).")
 
     return p
 
