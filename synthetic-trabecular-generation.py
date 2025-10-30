@@ -187,58 +187,66 @@ def cmd_sweep(args):
                 # =====================================================
                 # GRID PATTERN
                 # =====================================================
-tx = um_to_px(th); gx = um_to_px(sp)
+                tx = um_to_px(th)
+                gx = um_to_px(sp)
 
-# mask used for geometry / BS-TS / TIFF
-grid_mask = orthotropic_grid_mask(H, W, tx, gx, tx, gx)
-bs, ts, frac = bs_ts(grid_mask)
+                # mask used for geometry / BS-TS / TIFF
+                grid_mask = orthotropic_grid_mask(H, W, tx, gx, tx, gx)
+                bs, ts, frac = bs_ts(grid_mask)
 
-# mask used specifically for grayscale shading
-grid_mask_for_gray = trabecula_mask_for_grayscale(H, W, tx, gx, tx, gx)
+                # mask used specifically for grayscale shading
+                grid_mask_for_gray = trabecula_mask_for_grayscale(
+                    H, W, tx, gx, tx, gx
+                )
 
-base = out / f"pix{int(pix)}um" / f"grid_th{th}_sp{sp}"
-base.mkdir(parents=True, exist_ok=True)
+                base = out / f"pix{int(pix)}um" / f"grid_th{th}_sp{sp}"
+                base.mkdir(parents=True, exist_ok=True)
 
-# save the pure binary bone mask for reference
-save_binary_png(grid_mask, base / "preview.png")
+                # save the pure binary bone mask for reference
+                save_binary_png(grid_mask, base / "preview.png")
 
-for mode in modes:
-    sub_gray = base / f"grayscale-{mode}"
-    sub_gray.mkdir(parents=True, exist_ok=True)
+                for mode in modes:
+                    sub_gray = base / f"grayscale-{mode}"
+                    sub_gray.mkdir(parents=True, exist_ok=True)
 
-    if mode != "none" or args.noise_sigma > 0 or args.poisson:
-        img_gray = apply_grayscale(
-            grid_mask_for_gray,
-            mode=mode,
-            noise_sigma=args.noise_sigma,
-            poisson=args.poisson
-        )
-        Image.fromarray(img_gray).save(sub_gray / "preview_grayscale.png")
+                    # grayscale preview (only trabecula bars lit, background black)
+                    if mode != "none" or args.noise_sigma > 0 or args.poisson:
+                        img_gray = apply_grayscale(
+                            grid_mask_for_gray,
+                            mode=mode,
+                            noise_sigma=args.noise_sigma,
+                            poisson=args.poisson
+                        )
+                        Image.fromarray(img_gray).save(sub_gray / "preview_grayscale.png")
 
-    save_tiff_stack(grid_mask_for_gray, sub_gray / "stack.tif",
-                    n_slices=args.slices,
-                    z_step_um=args.z_step_um)
+                    # save stack for this grayscale version (for BoneJ etc.)
+                    save_tiff_stack(grid_mask_for_gray, sub_gray / "stack.tif",
+                                    n_slices=args.slices,
+                                    z_step_um=args.z_step_um)
 
-    append_csv(csv_path, {
-        "name": sub_gray.name,
-        "pattern": "grid",
-        "pixel_size_um": pix,
-        "thickness_um_x": th, "spacing_um_x": sp,
-        "thickness_um_y": th, "spacing_um_y": sp,
-        "grayscale": mode,
-        "BS": bs, "TS": ts, "BS_TS": frac
-    })
-
+                    append_csv(csv_path, {
+                        "name": sub_gray.name,
+                        "pattern": "grid",
+                        "pixel_size_um": pix,
+                        "thickness_um_x": th, "spacing_um_x": sp,
+                        "thickness_um_y": th, "spacing_um_y": sp,
+                        "grayscale": mode,
+                        "BS": bs, "TS": ts, "BS_TS": frac
+                    })
 
                 # =====================================================
                 # VERTICAL PATTERN
                 # =====================================================
-                t = um_to_px(th); g = um_to_px(sp)
+                t = um_to_px(th)
+                g = um_to_px(sp)
+
                 vert_mask = vertical_rods_mask(H, W, t, g)
                 bs, ts, frac = bs_ts(vert_mask)
 
                 base = out / f"pix{int(pix)}um" / f"vertical_th{th}_sp{sp}"
                 base.mkdir(parents=True, exist_ok=True)
+
+                # save binary (pure rod mask)
                 save_binary_png(vert_mask, base / "preview.png")
 
                 for mode in modes:
@@ -262,7 +270,8 @@ for mode in modes:
                         "name": sub_gray.name,
                         "pattern": "vertical",
                         "pixel_size_um": pix,
-                        "thickness_um": th, "spacing_um": sp,
+                        "thickness_um": th,
+                        "spacing_um": sp,
                         "grayscale": mode,
                         "BS": bs, "TS": ts, "BS_TS": frac
                     })
