@@ -31,6 +31,21 @@ def orthotropic_grid_mask(h, w,
     hmask = horizontal_rods_mask(h, w, rod_width_y_px, gap_y_px, offset_y_px)
     return np.maximum(v, hmask)
 
+def trabecula_mask_for_grayscale(h, w,
+                                 rod_width_x_px=8, gap_x_px=32,
+                                 rod_width_y_px=8, gap_y_px=32,
+                                 offset_x_px=0, offset_y_px=0):
+    """
+    Mask for grayscale rendering ONLY.
+    This is the union of vertical + horizontal rods.
+    Pixels in the rods = 1 (will get grayscale).
+    Everything else = 0 (will stay black).
+    """
+    v = vertical_rods_mask(h, w, rod_width_x_px, gap_x_px, offset_x_px)
+    hmask = horizontal_rods_mask(h, w, rod_width_y_px, gap_y_px, offset_y_px)
+    trab = np.maximum(v, hmask).astype(np.uint8)
+    return trab
+
 # =================== utilities =========================
 def um_to_px(val_um, pixel_size_um=PIXEL_SIZE_UM):
     return int(round(val_um / pixel_size_um))
@@ -172,41 +187,48 @@ def cmd_sweep(args):
                 # =====================================================
                 # GRID PATTERN
                 # =====================================================
-                tx = um_to_px(th); gx = um_to_px(sp)
-                grid_mask = orthotropic_grid_mask(H, W, tx, gx, tx, gx)
-                bs, ts, frac = bs_ts(grid_mask)
+tx = um_to_px(th); gx = um_to_px(sp)
 
-                base = out / f"pix{int(pix)}um" / f"grid_th{th}_sp{sp}"
-                base.mkdir(parents=True, exist_ok=True)
-                save_binary_png(grid_mask, base / "preview.png")
+# mask used for geometry / BS-TS / TIFF
+grid_mask = orthotropic_grid_mask(H, W, tx, gx, tx, gx)
+bs, ts, frac = bs_ts(grid_mask)
 
-                # loop over grayscale modes
-                for mode in modes:
-                    sub_gray = base / f"grayscale-{mode}"
-                    sub_gray.mkdir(parents=True, exist_ok=True)
+# mask used specifically for grayscale shading
+grid_mask_for_gray = trabecula_mask_for_grayscale(H, W, tx, gx, tx, gx)
 
-                    if mode != "none" or args.noise_sigma > 0 or args.poisson:
-                        img_gray = apply_grayscale(
-                            grid_mask,
-                            mode=mode,
-                            noise_sigma=args.noise_sigma,
-                            poisson=args.poisson
-                        )
-                        Image.fromarray(img_gray).save(sub_gray / "preview_grayscale.png")
+base = out / f"pix{int(pix)}um" / f"grid_th{th}_sp{sp}"
+base.mkdir(parents=True, exist_ok=True)
 
-                    save_tiff_stack(grid_mask, sub_gray / "stack.tif",
-                                    n_slices=args.slices,
-                                    z_step_um=args.z_step_um)
+# save the pure binary bone mask for reference
+save_binary_png(grid_mask, base / "preview.png")
 
-                    append_csv(csv_path, {
-                        "name": sub_gray.name,
-                        "pattern": "grid",
-                        "pixel_size_um": pix,
-                        "thickness_um_x": th, "spacing_um_x": sp,
-                        "thickness_um_y": th, "spacing_um_y": sp,
-                        "grayscale": mode,
-                        "BS": bs, "TS": ts, "BS_TS": frac
-                    })
+for mode in modes:
+    sub_gray = base / f"grayscale-{mode}"
+    sub_gray.mkdir(parents=True, exist_ok=True)
+
+    if mode != "none" or args.noise_sigma > 0 or args.poisson:
+        img_gray = apply_grayscale(
+            grid_mask_for_gray,
+            mode=mode,
+            noise_sigma=args.noise_sigma,
+            poisson=args.poisson
+        )
+        Image.fromarray(img_gray).save(sub_gray / "preview_grayscale.png")
+
+    save_tiff_stack(grid_mask_for_gray, sub_gray / "stack.tif",
+                    n_slices=args.slices,
+                    z_step_um=args.z_step_um)
+
+    append_csv(csv_path, {
+        "name": sub_gray.name,
+        "pattern": "grid",
+        "pixel_size_um": pix,
+        "thickness_um_x": th, "spacing_um_x": sp,
+        "thickness_um_y": th, "spacing_um_y": sp,
+        "grayscale": mode,
+        "BS": bs, "TS": ts, "BS_TS": frac
+    })
+
 
                 # =====================================================
                 # VERTICAL PATTERN
