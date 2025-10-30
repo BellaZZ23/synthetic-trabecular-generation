@@ -59,35 +59,44 @@ def bs_ts(mask01):
     return bs, ts, (bs/ts if ts else 0.0)
 
 def apply_grayscale(mask01, mode="none", noise_sigma=0.0, poisson=False):
-    """Optional realism (keeps background 0); returns 8-bit image."""
-    img = (mask01 * 255).astype(np.uint8)
-    if mode == "none" and not noise_sigma and not poisson:
-        return img
+    """
+    Apply grayscale gradient and/or noise ONLY within the white (bone) regions.
+    Black background remains pure 0.
 
+    mask01 : np.ndarray
+        Binary mask (0 = background, 1 = bone).
+    Returns
+    -------
+    np.ndarray : 8-bit grayscale image.
+    """
+    # Make sure input is binary (0/1)
+    mask01 = (mask01 > 0).astype(np.float32)
     H, W = mask01.shape
-    arr = img.astype(np.float32)
 
-    if mode == "linear_x":
-        xx = np.linspace(0, 1, W, dtype=np.float32)[None, :]
-        field = (xx * 255).repeat(H, 0)
-        arr = field * mask01  # gradient only inside bone (white) regions
+    # Base grayscale field (only bone regions)
+    if mode == "none":
+        arr = mask01 * 255.0  # pure white bone, black background
+    elif mode == "linear_x":
+        gradient = np.linspace(0, 1, W, dtype=np.float32)[None, :].repeat(H, 0)
+        arr = gradient * 255.0 * mask01  # apply gradient only inside bone
     elif mode == "linear_y":
-        yy = np.linspace(0, 1, H, dtype=np.float32)[:, None]
-        field = (yy * 255).repeat(W, 1)
-        arr = field * mask01  # gradient only inside bone (white) regions
+        gradient = np.linspace(0, 1, H, dtype=np.float32)[:, None].repeat(W, 1)
+        arr = gradient * 255.0 * mask01
     else:
-        arr = img.astype(np.float32)  # no gradient; keep binary values
+        raise ValueError(f"Unknown grayscale mode: {mode}")
 
-    # Add noise only inside the bone mask
+    # Add Gaussian noise within bone only
     if noise_sigma and noise_sigma > 0:
         noise = np.random.normal(0, noise_sigma, arr.shape).astype(np.float32)
         arr = np.where(mask01 > 0, arr + noise, 0)
 
+    # Optional Poisson noise within bone only
     if poisson:
         lam = np.clip(arr / 255.0, 0, 1) * 20.0
-        arr = np.random.poisson(lam).astype(np.float32) / 20.0 * 255.0
-        arr = np.where(mask01 > 0, arr, 0)
+        poisson_arr = np.random.poisson(lam).astype(np.float32) / 20.0 * 255.0
+        arr = np.where(mask01 > 0, poisson_arr, 0)
 
+    # Clamp to 8-bit range and return
     return np.clip(arr, 0, 255).astype(np.uint8)
 
 def append_csv(csv_path, row, header=None):
