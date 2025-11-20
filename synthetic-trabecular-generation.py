@@ -168,6 +168,7 @@ def _write_row_with_common_fields(csv_path, base_row, mask01, img_gray_or_none,
                                   args, pix, pattern):
     """
     Helper to enrich a CSV row with common image-formation and morphometric info.
+    Returns the final row dict.
     """
     bs, ts, frac = bs_ts(mask01)
     row = dict(base_row)
@@ -177,7 +178,7 @@ def _write_row_with_common_fields(csv_path, base_row, mask01, img_gray_or_none,
         "BS": bs,
         "TS": ts,
         "BS_TS": frac,
-        "grayscale": base_row.get("grayscale", None),
+        "grayscale": row.get("grayscale", None),
         "noise_sigma": float(args.noise_sigma),
         "poisson": int(bool(args.poisson)),
         "z_step_um": float(args.z_step_um),
@@ -192,6 +193,45 @@ def _write_row_with_common_fields(csv_path, base_row, mask01, img_gray_or_none,
         row.update(compute_intensity_features(mask01, img_gray_or_none))
 
     append_csv(csv_path, row)
+    return row
+
+def _add_pca_samples(arr, base_meta, pca_collect, patch_size):
+    """
+    Add PCA samples (image-level or patch-level) to the collection.
+
+    arr : 2D numpy array (grayscale image)
+    base_meta : dict with metadata for this image
+    pca_collect : {"vectors": list, "meta": list}
+    patch_size : int, 0 means full-image PCA; >0 means patch-based PCA
+    """
+    if pca_collect is None:
+        return
+
+    H, W = arr.shape
+
+    if patch_size and patch_size > 0:
+        ps = int(patch_size)
+        # non-overlapping patches
+        for y in range(0, H - ps + 1, ps):
+            for x in range(0, W - ps + 1, ps):
+                patch = arr[y:y+ps, x:x+ps]
+                if patch.shape != (ps, ps):
+                    continue
+                vec = patch.astype(np.float32).ravel()
+                meta = dict(base_meta)
+                meta["pca_mode"] = "patch"
+                meta["patch_size"] = ps
+                meta["patch_row"] = y
+                meta["patch_col"] = x
+                pca_collect["vectors"].append(vec)
+                pca_collect["meta"].append(meta)
+    else:
+        vec = arr.astype(np.float32).ravel()
+        meta = dict(base_meta)
+        meta["pca_mode"] = "image"
+        meta["patch_size"] = 0
+        pca_collect["vectors"].append(vec)
+        pca_collect["meta"].append(meta)
 
 # ======================= CLI tasks =====================
 def cmd_single(args):
@@ -259,12 +299,12 @@ def cmd_single(args):
             "spacing_um": args.spacing_um,
         })
 
-    _write_row_with_common_fields(csv_path, base_row, mask, img_gray,
-                                  args, args.pixel_size_um, args.pattern)
+    _ = _write_row_with_common_fields(csv_path, base_row, mask, img_gray,
+                                      args, args.pixel_size_um, args.pattern)
 
 def _sweep_grid_pattern(args, pix, H, W,
                         thx_um, thy_um, spx_um, spy_um,
-                        modes, csv_path):
+                        modes, csv_path, pca_collect):
     out = Path(args.outdir)
 
     tx = um_to_px(thx_um, pixel_size_um=pix)
@@ -307,12 +347,17 @@ def _sweep_grid_pattern(args, pix, H, W,
             "thickness_um_y": thy_um,
             "spacing_um_y": spy_um,
         }
-        _write_row_with_common_fields(csv_path, base_row, grid_mask_for_gray,
-                                      img_gray, args, pix, "grid")
+        full_row = _write_row_with_common_fields(csv_path, base_row, grid_mask_for_gray,
+                                                 img_gray, args, pix, "grid")
+
+        if pca_collect is not None:
+            # choose image for PCA: grayscale if available, else binary mask
+            arr_for_pca = img_gray if img_gray is not None else (grid_mask_for_gray * 255).astype(np.uint8)
+            _add_pca_samples(arr_for_pca, full_row, pca_collect, args.patch_size)
 
 def _sweep_vertical_pattern(args, pix, H, W,
                             th_um, sp_um,
-                            modes, csv_path):
+                            modes, csv_path, pca_collect):
     out = Path(args.outdir)
 
     t = um_to_px(th_um, pixel_size_um=pix)
@@ -348,12 +393,16 @@ def _sweep_vertical_pattern(args, pix, H, W,
             "thickness_um": th_um,
             "spacing_um": sp_um,
         }
-        _write_row_with_common_fields(csv_path, base_row, vert_mask,
-                                      img_gray, args, pix, "vertical")
+        full_row = _write_row_with_common_fields(csv_path, base_row, vert_mask,
+                                                 img_gray, args, pix, "vertical")
+
+        if pca_collect is not None:
+            arr_for_pca = img_gray if img_gray is not None else (vert_mask * 255).astype(np.uint8)
+            _add_pca_samples(arr_for_pca, full_row, pca_collect, args.patch_size)
 
 def _sweep_horizontal_pattern(args, pix, H, W,
                               th_um, sp_um,
-                              modes, csv_path):
+                              modes, csv_path, pca_collect):
     out = Path(args.outdir)
 
     t = um_to_px(th_um, pixel_size_um=pix)
@@ -389,8 +438,12 @@ def _sweep_horizontal_pattern(args, pix, H, W,
             "thickness_um": th_um,
             "spacing_um": sp_um,
         }
-        _write_row_with_common_fields(csv_path, base_row, horiz_mask,
-                                      img_gray, args, pix, "horizontal")
+        full_row = _write_row_with_common_fields(csv_path, base_row, horiz_mask,
+                                                 img_gray, args, pix, "horizontal")
+
+        if pca_collect is not None:
+            arr_for_pca = img_gray if img_gray is not None else (horiz_mask * 255).astype(np.uint8)
+            _add_pca_samples(arr_for_pca, full_row, pca_collect, args.patch_size)
 
 def cmd_sweep(args):
     out = Path(args.outdir)
@@ -405,6 +458,11 @@ def cmd_sweep(args):
     th_y_list = args.thickness_y_um or args.thickness_um
     sp_x_list = args.spacing_x_um   or args.spacing_um
     sp_y_list = args.spacing_y_um   or args.spacing_um
+
+    # PCA collection structures
+    pca_collect = None
+    if args.export_pca:
+        pca_collect = {"vectors": [], "meta": []}
 
     for pix in args.pixel_sizes_um:
         # update global calibration for TIFF sidecar
@@ -421,24 +479,45 @@ def cmd_sweep(args):
                         if "grid" in args.patterns:
                             _sweep_grid_pattern(args, pix, H, W,
                                                 thx, thy, spx, spy,
-                                                modes, csv_path)
+                                                modes, csv_path, pca_collect)
 
                         if "vertical" in args.patterns:
                             _sweep_vertical_pattern(args, pix, H, W,
                                                     thx, spx,
-                                                    modes, csv_path)
+                                                    modes, csv_path, pca_collect)
 
                         if "horizontal" in args.patterns:
                             _sweep_horizontal_pattern(args, pix, H, W,
                                                       thy, spy,
-                                                      modes, csv_path)
+                                                      modes, csv_path, pca_collect)
+
+    # Save PCA-ready dataset if requested
+    if pca_collect is not None and pca_collect["vectors"]:
+        pca_out = Path(args.pca_outdir)
+        pca_out.mkdir(parents=True, exist_ok=True)
+        X = np.stack(pca_collect["vectors"], axis=0)
+        np.save(pca_out / "X.npy", X)
+
+        # write metadata CSV
+        meta_rows = pca_collect["meta"]
+        fieldnames = sorted(meta_rows[0].keys())
+        meta_csv_path = pca_out / "metadata.csv"
+        with open(meta_csv_path, "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=fieldnames)
+            w.writeheader()
+            for row in meta_rows:
+                w.writerow(row)
+
+        print(f"PCA dataset saved: {X.shape[0]} samples × {X.shape[1]} features")
+        print(f"  - matrix:   {pca_out / 'X.npy'}")
+        print(f"  - metadata: {meta_csv_path}")
 
     print(f"✓ Sweep done → {csv_path}")
 
 # =================== argument parser ===================
 def build_parser():
     p = argparse.ArgumentParser(
-        description="Synthetic trabecular generator (2D→3D stack, BS/TS, rich metadata)."
+        description="Synthetic trabecular generator (2D→3D stack, BS/TS, rich metadata, PCA export)."
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -451,6 +530,8 @@ def build_parser():
     common.add_argument("--grayscale", choices=["none", "linear_x", "linear_y"], default="none")
     common.add_argument("--noise-sigma", type=float, default=0.0)
     common.add_argument("--poisson", action="store_true")
+    common.add_argument("--seed", type=int, default=None,
+                        help="Random seed for reproducible noise")
 
     s1 = sub.add_parser("single", parents=[common], help="Generate one pattern")
     s1.add_argument("--pattern", choices=["grid", "vertical", "horizontal"], required=True)
@@ -498,15 +579,29 @@ def build_parser():
                     default=["none", "linear_x", "linear_y"],
                     help="Grayscale profiles to sweep over (default: all).")
 
+    # PCA export options
+    s2.add_argument("--export-pca", action="store_true",
+                    help="If set, export PCA-ready X.npy and metadata.csv")
+    s2.add_argument("--pca-outdir", type=str, default="data/pca",
+                    help="Output directory for PCA dataset")
+    s2.add_argument("--patch-size", type=int, default=0,
+                    help="Patch size for patch-based PCA (0 = full-image PCA)")
+
     return p
 
 def main():
     parser = build_parser()
     args = parser.parse_args()
+
     # push CLI calib into globals so TIFF sidecar is correct
     global PIXEL_SIZE_UM, Z_STEP_UM
     PIXEL_SIZE_UM = float(getattr(args, "pixel_size_um", PIXEL_SIZE_UM))
     Z_STEP_UM     = float(getattr(args, "z_step_um", Z_STEP_UM))
+
+    # set seed if provided
+    if getattr(args, "seed", None) is not None:
+        np.random.seed(args.seed)
+
     if args.cmd == "single":
         cmd_single(args)
     elif args.cmd == "sweep":
