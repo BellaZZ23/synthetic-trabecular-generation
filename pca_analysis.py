@@ -1,8 +1,5 @@
-<<<<<<< HEAD
-=======
-#pca_analysis
->>>>>>> 3085935c66235e46ea21c79646b12d97ccb4bce1
 #!/usr/bin/env python3
+
 """
 PCA analysis for synthetic trabecular images.
 
