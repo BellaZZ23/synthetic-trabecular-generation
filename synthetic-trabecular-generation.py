@@ -125,16 +125,52 @@ def extra_morphometrics(mask01):
     """
     return {}
 
+# ================== CSV schema (fixed header) ==========
+
+CSV_FIELDS = [
+    "name",
+    "pattern",
+    "pixel_size_um",
+    "BS", "TS", "BS_TS",
+    "grayscale",
+    "noise_sigma",
+    "poisson",
+    "z_step_um",
+    "slices",
+    # geometry (grid)
+    "thickness_um_x",
+    "spacing_um_x",
+    "thickness_um_y",
+    "spacing_um_y",
+    # geometry (vertical/horizontal)
+    "thickness_um",
+    "spacing_um",
+    # intensity features
+    "mean_intensity",
+    "std_intensity",
+] + [f"hist_bin_{i}" for i in range(16)]
+
 def append_csv(csv_path, row, header=None):
+    """
+    Append a row to CSV using a fixed header.
+
+    - Uses CSV_FIELDS by default so all rows share the same columns.
+    - Missing keys in row are written as empty.
+    - Extra keys in row are ignored.
+    """
     csv_path = Path(csv_path); csv_path.parent.mkdir(parents=True, exist_ok=True)
     exists = csv_path.exists()
+
+    if header is None:
+        header = CSV_FIELDS
+
     with open(csv_path, "a", newline="") as f:
-        if header is None:
-            header = list(row.keys())
         w = csv.DictWriter(f, fieldnames=header)
         if not exists:
             w.writeheader()
-        w.writerow(row)
+        # Filter row to known fields only
+        filtered = {k: row.get(k, "") for k in header}
+        w.writerow(filtered)
 
 # ======================= helpers =======================
 def compute_intensity_features(mask01, img_gray):
@@ -192,7 +228,7 @@ def _write_row_with_common_fields(csv_path, base_row, mask01, img_gray_or_none,
     if img_gray_or_none is not None:
         row.update(compute_intensity_features(mask01, img_gray_or_none))
 
-    append_csv(csv_path, row)
+    append_csv(csv_path, row, header=CSV_FIELDS)
     return row
 
 def _add_pca_samples(arr, base_meta, pca_collect, patch_size):
