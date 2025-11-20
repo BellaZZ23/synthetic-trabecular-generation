@@ -449,10 +449,12 @@ def _sweep_vertical_pattern(args, pix, H, W,
                         z_step_um=args.z_step_um)
 
         base_row = {
-            "name": sub_gray.name,
-            "grayscale": mode,
-            "thickness_um": th_um,
-            "spacing_um": sp_um,
+    "name": sub_gray.name,
+    "grayscale": mode,
+    "thickness_um_x": th_um,
+    "spacing_um_x": sp_um,
+    "thickness_um_y": float("nan"),
+    "spacing_um_y": float("nan"),
         }
         full_row = _write_row_with_common_fields(csv_path, base_row, vert_mask,
                                                  img_gray, args, pix, "vertical")
@@ -494,10 +496,12 @@ def _sweep_horizontal_pattern(args, pix, H, W,
                         z_step_um=args.z_step_um)
 
         base_row = {
-            "name": sub_gray.name,
-            "grayscale": mode,
-            "thickness_um": th_um,
-            "spacing_um": sp_um,
+    "name": sub_gray.name,
+    "grayscale": mode,
+    "thickness_um_y": th_um,
+    "spacing_um_y": sp_um,
+    "thickness_um_x": float("nan"),
+    "spacing_um_x": float("nan"),
         }
         full_row = _write_row_with_common_fields(csv_path, base_row, horiz_mask,
                                                  img_gray, args, pix, "horizontal")
