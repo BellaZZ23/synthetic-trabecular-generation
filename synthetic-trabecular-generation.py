@@ -269,6 +269,32 @@ def _add_pca_samples(arr, base_meta, pca_collect, patch_size):
         pca_collect["vectors"].append(vec)
         pca_collect["meta"].append(meta)
 
+def _choose_pca_image(mask01, img_gray, args):
+    """
+    Decide which 2D array to use for PCA based on CLI flag.
+
+    mask01   : binary mask (0/1)
+    img_gray : 8-bit grayscale image or None
+    args     : CLI args with pca_image_type
+
+    Returns a 2D uint8 array.
+    """
+    mask_img = (mask01 * 255).astype(np.uint8)
+    mode = getattr(args, "pca_image_type", "auto")
+
+    if mode == "grayscale":
+        if img_gray is None:
+            return mask_img
+        return img_gray
+
+    if mode == "mask":
+        return mask_img
+
+    # auto: prefer grayscale if available, else mask
+    if img_gray is not None:
+        return img_gray
+    return mask_img
+
 # ======================= CLI tasks =====================
 def cmd_single(args):
     H = W = args.size
@@ -387,8 +413,7 @@ def _sweep_grid_pattern(args, pix, H, W,
                                                  img_gray, args, pix, "grid")
 
         if pca_collect is not None:
-            # choose image for PCA: grayscale if available, else binary mask
-            arr_for_pca = img_gray if img_gray is not None else (grid_mask_for_gray * 255).astype(np.uint8)
+            arr_for_pca = _choose_pca_image(grid_mask_for_gray, img_gray, args)
             _add_pca_samples(arr_for_pca, full_row, pca_collect, args.patch_size)
 
 def _sweep_vertical_pattern(args, pix, H, W,
@@ -433,7 +458,7 @@ def _sweep_vertical_pattern(args, pix, H, W,
                                                  img_gray, args, pix, "vertical")
 
         if pca_collect is not None:
-            arr_for_pca = img_gray if img_gray is not None else (vert_mask * 255).astype(np.uint8)
+            arr_for_pca = _choose_pca_image(vert_mask, img_gray, args)
             _add_pca_samples(arr_for_pca, full_row, pca_collect, args.patch_size)
 
 def _sweep_horizontal_pattern(args, pix, H, W,
@@ -478,7 +503,7 @@ def _sweep_horizontal_pattern(args, pix, H, W,
                                                  img_gray, args, pix, "horizontal")
 
         if pca_collect is not None:
-            arr_for_pca = img_gray if img_gray is not None else (horiz_mask * 255).astype(np.uint8)
+            arr_for_pca = _choose_pca_image(horiz_mask, img_gray, args)
             _add_pca_samples(arr_for_pca, full_row, pca_collect, args.patch_size)
 
 def cmd_sweep(args):
@@ -622,6 +647,12 @@ def build_parser():
                     help="Output directory for PCA dataset")
     s2.add_argument("--patch-size", type=int, default=0,
                     help="Patch size for patch-based PCA (0 = full-image PCA)")
+    s2.add_argument(
+        "--pca-image-type",
+        choices=["auto", "mask", "grayscale"],
+        default="auto",
+        help="Which image to use for PCA: binary mask, grayscale, or auto (prefer grayscale if available)."
+    )
 
     return p
 
