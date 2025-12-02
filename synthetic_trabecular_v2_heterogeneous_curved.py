@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
 """
-synthetic_trabecular_v3_heterogeneous_curved.py
+synthetic_trabecular_v2_heterogeneous_curved.py
 
-v3 synthetic trabecular generator:
+v2 synthetic trabecular generator:
 - Multi-zone heterogeneous images (3–5 zones per image)
-- Mixture of patterns: grid, vertical, horizontal, radial rings, sinusoidal bands
-- Simple grayscale models
-- Saves per-image PNGs/TIFFs + images.csv + zones.csv
+- Mixture of patterns:
+    * grid
+    * vertical rods
+    * horizontal rods
+    * sinusoidal curved bands
+    * radial ring / arc-like trabeculae
+- Simple grayscale models (none, linear_x, linear_y)
+- Outputs:
+    * per-image mask + grayscale PNGs
+    * per-image TIFF stacks
+    * images.csv  (one row per image)
+    * zones.csv   (one row per zone per image)
 """
 
 from pathlib import Path
@@ -27,9 +36,12 @@ Z_STEP_UM     = 1.0    # micron per slice
 
 
 # -----------------------------------------------------------
-# Basic pattern generators (straight patterns)
+# Basic straight pattern generators
 # -----------------------------------------------------------
 def vertical_rods_mask(h, w, rod_width_px=8, gap_px=32, left_margin_px=0):
+    """
+    Vertical rods spaced periodically along x.
+    """
     x = np.arange(w)[None, :]
     period = rod_width_px + gap_px
     in_rod = (x - left_margin_px) % period < rod_width_px
@@ -37,6 +49,9 @@ def vertical_rods_mask(h, w, rod_width_px=8, gap_px=32, left_margin_px=0):
 
 
 def horizontal_rods_mask(h, w, rod_width_px=8, gap_px=32, top_margin_px=0):
+    """
+    Horizontal rods spaced periodically along y.
+    """
     y = np.arange(h)[:, None]
     period = rod_width_px + gap_px
     in_rod = (y - top_margin_px) % period < rod_width_px
@@ -47,6 +62,9 @@ def orthotropic_grid_mask(h, w,
                           rod_width_x_px=8, gap_x_px=32,
                           rod_width_y_px=8, gap_y_px=32,
                           offset_x_px=0, offset_y_px=0):
+    """
+    Grid of vertical + horizontal rods.
+    """
     v = vertical_rods_mask(h, w, rod_width_x_px, gap_x_px, offset_x_px)
     hmask = horizontal_rods_mask(h, w, rod_width_y_px, gap_y_px, offset_y_px)
     return np.maximum(v, hmask)
@@ -55,11 +73,30 @@ def orthotropic_grid_mask(h, w,
 # -----------------------------------------------------------
 # Curved / radial pattern generators
 # -----------------------------------------------------------
-def radial_rings_mask(h, w, ring_thickness_px=6, ring_gap_px=24, center=None):
+def sinusoidal_bands_mask(h, w, band_thickness_px=6,
+                          wavelength_px=80, n_bands=3, amplitude_px=20):
     """
-    Concentric circular rings centred at 'center' (cx, cy).
-    ring_thickness_px : thickness of each ring
-    ring_gap_px       : gap between rings
+    Multiple sinusoidal horizontal trabeculae:
+      y_center_k(x) = base_k + amplitude * sin(2π x / wavelength)
+    """
+    yy, xx = np.mgrid[0:h, 0:w]
+    mask = np.zeros((h, w), dtype=np.uint8)
+
+    base_positions = np.linspace(h * 0.2, h * 0.8, n_bands)
+    for base_y in base_positions:
+        y_center = base_y + amplitude_px * np.sin(2.0 * np.pi * xx / wavelength_px)
+        band = np.abs(yy - y_center) <= (band_thickness_px / 2.0)
+        mask[band] = 1
+
+    return mask
+
+
+def radial_rings_mask(h, w, ring_thickness_px=6,
+                      ring_gap_px=24, center=None,
+                      angle_start_deg=0.0, angle_end_deg=360.0):
+    """
+    Concentric circular rings (full or partial arcs).
+    angle_start_deg / angle_end_deg allow arcs instead of full rings.
     """
     if center is None:
         cx, cy = w / 2.0, h / 2.0
@@ -67,30 +104,26 @@ def radial_rings_mask(h, w, ring_thickness_px=6, ring_gap_px=24, center=None):
         cx, cy = center
 
     yy, xx = np.mgrid[0:h, 0:w]
-    r = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
+    dx = xx - cx
+    dy = yy - cy
+    r = np.sqrt(dx * dx + dy * dy)
 
     period = ring_thickness_px + ring_gap_px
     in_ring = (r % period) < ring_thickness_px
-    return in_ring.astype(np.uint8)
 
+    # restrict by angle if not full 360
+    angle = np.degrees(np.arctan2(dy, dx))  # range [-180, 180]
+    # wrap angles into [0, 360)
+    angle[angle < 0] += 360.0
+    a0 = angle_start_deg % 360.0
+    a1 = angle_end_deg % 360.0
+    if a0 < a1:
+        in_sector = (angle >= a0) & (angle <= a1)
+    else:
+        # wrap-around case
+        in_sector = (angle >= a0) | (angle <= a1)
 
-def sinusoidal_bands_mask(h, w, band_thickness_px=6,
-                          wavelength_px=80, n_bands=3, amplitude_px=20):
-    """
-    Multiple sinusoidal horizontal trabeculae:
-    y_center_k(x) = base_k + amplitude * sin(2π x / wavelength)
-    """
-    yy, xx = np.mgrid[0:h, 0:w]
-    mask = np.zeros((h, w), dtype=np.uint8)
-
-    # Evenly space bands vertically
-    base_positions = np.linspace(h * 0.2, h * 0.8, n_bands)
-
-    for base_y in base_positions:
-        y_center = base_y + amplitude_px * np.sin(2.0 * np.pi * xx / wavelength_px)
-        band = np.abs(yy - y_center) <= (band_thickness_px / 2.0)
-        mask[band] = 1
-
+    mask = (in_ring & in_sector).astype(np.uint8)
     return mask
 
 
@@ -104,9 +137,9 @@ def um_to_px(val_um, pixel_size_um=PIXEL_SIZE_UM):
 def apply_grayscale(mask01, mode="none"):
     """
     Simple grayscale model:
-    - mode="none"      → uniform bright bone
-    - mode="linear_x"  → left→right gradient within bone
-    - mode="linear_y"  → top→bottom gradient within bone
+      - mode="none"      → uniform bright bone
+      - mode="linear_x"  → left→right gradient within bone
+      - mode="linear_y"  → top→bottom gradient within bone
     Background stays black.
     """
     mask01 = (mask01 > 0).astype(np.float32)
@@ -133,6 +166,9 @@ def save_png(arr, out_path):
 
 
 def save_stack(mask01, out_path, n_slices=2, z_step_um=Z_STEP_UM):
+    """
+    Save a simple Z-stack (repeated 2D slice) with micron metadata.
+    """
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     img = (mask01 * 255).astype(np.uint8)
@@ -155,41 +191,59 @@ def save_stack(mask01, out_path, n_slices=2, z_step_um=Z_STEP_UM):
 # -----------------------------------------------------------
 # Zone definition & heterogeneous composition
 # -----------------------------------------------------------
-def generate_zone_mask(pattern, H, W, params):
+def generate_zone_mask(pattern, H, W, params_px, rng):
     """
-    pattern : 'grid' | 'vertical' | 'horizontal' | 'radial_rings' | 'sinusoidal'
-    params  : dict with pattern-specific parameters (in px)
+    pattern : 'grid' | 'vertical' | 'horizontal' | 'sinusoidal' | 'radial'
+    params_px : dict with pattern-specific parameters in pixels
     """
     if pattern == "grid":
-        t_px = params["thickness_px"]
-        g_px = params["spacing_px"]
+        t_px = params_px["thickness_px"]
+        g_px = params_px["spacing_px"]
         mask = orthotropic_grid_mask(H, W, t_px, g_px, t_px, g_px)
+
     elif pattern == "vertical":
-        t_px = params["thickness_px"]
-        g_px = params["spacing_px"]
+        t_px = params_px["thickness_px"]
+        g_px = params_px["spacing_px"]
         mask = vertical_rods_mask(H, W, t_px, g_px)
+
     elif pattern == "horizontal":
-        t_px = params["thickness_px"]
-        g_px = params["spacing_px"]
+        t_px = params_px["thickness_px"]
+        g_px = params_px["spacing_px"]
         mask = horizontal_rods_mask(H, W, t_px, g_px)
-    elif pattern == "radial_rings":
-        t_px = params["thickness_px"]
-        g_px = params["spacing_px"]
-        mask = radial_rings_mask(H, W, ring_thickness_px=t_px, ring_gap_px=g_px)
+
     elif pattern == "sinusoidal":
-        t_px = params["thickness_px"]
-        g_px = params["spacing_px"]
-        # interpret spacing_px as wavelength; also derive amplitude
+        t_px = params_px["thickness_px"]
+        g_px = params_px["spacing_px"]
         wavelength = max(g_px, 16)
         amplitude = max(int(0.1 * H), 10)
+        n_bands = int(rng.integers(2, 5))
         mask = sinusoidal_bands_mask(
             H,
             W,
             band_thickness_px=t_px,
             wavelength_px=wavelength,
-            n_bands=params.get("n_bands", 3),
+            n_bands=n_bands,
             amplitude_px=amplitude,
         )
+
+    elif pattern == "radial":
+        t_px = params_px["thickness_px"]
+        g_px = params_px["spacing_px"]
+        cx = W / 2.0 + rng.uniform(-0.1 * W, 0.1 * W)
+        cy = H / 2.0 + rng.uniform(-0.1 * H, 0.1 * H)
+        angle_span = rng.uniform(120.0, 300.0)
+        start_angle = rng.uniform(0.0, 360.0)
+        end_angle = (start_angle + angle_span) % 360.0
+        mask = radial_rings_mask(
+            H,
+            W,
+            ring_thickness_px=t_px,
+            ring_gap_px=g_px,
+            center=(cx, cy),
+            angle_start_deg=start_angle,
+            angle_end_deg=end_angle,
+        )
+
     else:
         raise ValueError(f"Unknown pattern '{pattern}'")
 
@@ -228,7 +282,7 @@ def generate_heterogeneous_image(H, W, rng, patterns):
     zones_meta = []
 
     # Choose 3–5 zones and whether we split along x or y
-    n_zones = rng.integers(3, 6)
+    n_zones = int(rng.integers(3, 6))
     axis = rng.choice(["x", "y"])
     length = W if axis == "x" else H
     boundaries = np.linspace(0, length, n_zones + 1, dtype=int)
@@ -251,10 +305,10 @@ def generate_heterogeneous_image(H, W, rng, patterns):
         params_px = {
             "thickness_px": thickness_px,
             "spacing_px": spacing_px,
-            "n_bands": int(rng.integers(2, 5)),
         }
 
-        full_mask = generate_zone_mask(pattern, H, W, params_px)
+        full_mask = generate_zone_mask(pattern, H, W, params_px, rng)
+
         zone = {
             "extent_axis": axis,
             "start": start,
@@ -262,6 +316,8 @@ def generate_heterogeneous_image(H, W, rng, patterns):
             "pattern": pattern,
             "thickness_um": thickness_um,
             "spacing_um": spacing_um,
+            "thickness_px": thickness_px,
+            "spacing_px": spacing_px,
             "grayscale_mode": grayscale_mode,
         }
 
@@ -296,9 +352,9 @@ def init_csv(path, fieldnames):
 # -----------------------------------------------------------
 def build_parser():
     p = argparse.ArgumentParser(
-        description="v3 heterogeneous synthetic trabecular generator with curved patterns."
+        description="v2 heterogeneous synthetic trabecular generator with curved patterns."
     )
-    p.add_argument("--outdir", type=str, default="data/hetero_v3",
+    p.add_argument("--outdir", type=str, default="data/hetero_v2",
                    help="Output directory root.")
     p.add_argument("--size", type=int, default=512,
                    help="Image size H=W.")
@@ -350,11 +406,13 @@ def main():
             "pattern",
             "thickness_um",
             "spacing_um",
+            "thickness_px",
+            "spacing_px",
             "grayscale_mode",
         ],
     )
 
-    patterns = ["grid", "vertical", "horizontal", "radial_rings", "sinusoidal"]
+    patterns = ["grid", "vertical", "horizontal", "sinusoidal", "radial"]
 
     try:
         for i in range(args.n_images):
@@ -366,6 +424,7 @@ def main():
             gray_path = outdir / f"{image_id}_gray.png"
             stack_path = outdir / f"{image_id}_stack.tif"
 
+            # Save images
             save_png((mask * 255).astype(np.uint8), mask_path)
             save_png(gray, gray_path)
             save_stack(mask, stack_path, n_slices=args.slices, z_step_um=args.z_step_um)
@@ -395,6 +454,8 @@ def main():
                         "pattern": z["pattern"],
                         "thickness_um": z["thickness_um"],
                         "spacing_um": z["spacing_um"],
+                        "thickness_px": z["thickness_px"],
+                        "spacing_px": z["spacing_px"],
                         "grayscale_mode": z["grayscale_mode"],
                     }
                 )
