@@ -7,17 +7,18 @@ Visual diagnostics for PCA of synthetic trabecular images.
 - Loads scores_with_metadata.csv from pca_analysis.py output
 - Plots:
     * Explained variance ratio (bar plot)
-    * PC1 vs PC2 coloured by pattern (categorical)
-    * PC1 vs PC2 coloured by thickness (continuous, if available)
+    * PC1 vs PC2 coloured by pattern (categorical, with colours/markers)
+    * PC1 vs PC2 coloured by a continuous field (e.g. thickness)
+    * Optional 3D PC1–PC3 scatter coloured by pattern
 """
 
 from pathlib import Path
 import argparse
 import csv
-import math
 
 import numpy as np
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
 
 def load_scores_with_metadata(path_csv):
@@ -90,48 +91,62 @@ def plot_explained_variance_ratio(evr, outdir):
     plt.close()
 
 
-def categorical_colors(categories):
+def plot_pc_scatter_categorical(scores, meta_rows, pc_names, category_field, outdir, evr=None):
     """
-    Map category labels to integers for colouring.
-    """
-    unique = sorted(set(categories))
-    mapping = {cat: i for i, cat in enumerate(unique)}
-    values = np.array([mapping[c] for c in categories], dtype=float)
-    return values, mapping
-
-
-def plot_pc_scatter_categorical(scores, meta_rows, pc_names, category_field, outdir):
-    """
-    PC1 vs PC2 scatter plot coloured by a categorical field (e.g., pattern).
+    PC1 vs PC2 scatter plot coloured by a categorical field (e.g., pattern),
+    using different colours/markers and a clear legend.
     """
     outdir = ensure_outdir(outdir)
     if scores.shape[1] < 2:
         print("Not enough PCs (need at least 2) for scatter plot.")
         return
 
-    cats = [row.get(category_field, "NA") for row in meta_rows]
-    cat_values, mapping = categorical_colors(cats)
+    # Extract category labels, e.g. 'grid', 'vertical', 'horizontal'
+    cats = np.array([row.get(category_field, "NA") for row in meta_rows])
+    unique_cats = np.unique(cats)
+
+    # Define consistent colours/markers
+    base_colors = ["tab:blue", "tab:orange", "tab:green", "tab:red", "tab:purple"]
+    base_markers = ["o", "s", "^", "D", "P"]
+
+    color_map = {}
+    marker_map = {}
+    for i, c in enumerate(unique_cats):
+        color_map[c] = base_colors[i % len(base_colors)]
+        marker_map[c] = base_markers[i % len(base_markers)]
 
     plt.figure()
-    sc = plt.scatter(scores[:, 0], scores[:, 1], c=cat_values, s=10, alpha=0.8)
-    plt.xlabel(pc_names[0])
-    plt.ylabel(pc_names[1])
+
+    for c in unique_cats:
+        mask = (cats == c)
+        plt.scatter(
+            scores[mask, 0],
+            scores[mask, 1],
+            c=color_map[c],
+            marker=marker_map[c],
+            s=15,
+            alpha=0.8,
+            label=str(c),
+        )
+
+    # Axis labels including explained variance if available
+    if evr is not None and len(evr) >= 2:
+        xlab = f"{pc_names[0]} ({evr[0] * 100:.1f}% var)"
+        ylab = f"{pc_names[1]} ({evr[1] * 100:.1f}% var)"
+    else:
+        xlab = pc_names[0]
+        ylab = pc_names[1]
+
+    plt.xlabel(xlab)
+    plt.ylabel(ylab)
     plt.title(f"{pc_names[0]} vs {pc_names[1]} coloured by {category_field}")
-
-    # Legend
-    handles = []
-    labels = []
-    for cat, idx in mapping.items():
-        handles.append(plt.Line2D([], [], marker="o", linestyle="", markersize=6))
-        labels.append(f"{cat}")
-    plt.legend(handles, labels, title=category_field, fontsize=8)
-
+    plt.legend(title=category_field, fontsize=8)
     plt.tight_layout()
     plt.savefig(outdir / f"scatter_{pc_names[0]}_{pc_names[1]}_by_{category_field}.png", dpi=300)
     plt.close()
 
 
-def plot_pc_scatter_continuous(scores, meta_rows, pc_names, field, outdir):
+def plot_pc_scatter_continuous(scores, meta_rows, pc_names, field, outdir, evr=None):
     """
     PC1 vs PC2 scatter coloured by a continuous field (e.g., thickness).
     """
@@ -155,13 +170,68 @@ def plot_pc_scatter_continuous(scores, meta_rows, pc_names, field, outdir):
 
     plt.figure()
     sc = plt.scatter(scores[:, 0], scores[:, 1], c=values, s=10, alpha=0.8)
-    plt.xlabel(pc_names[0])
-    plt.ylabel(pc_names[1])
+    # Axis labels including explained variance if available
+    if evr is not None and len(evr) >= 2:
+        xlab = f"{pc_names[0]} ({evr[0] * 100:.1f}% var)"
+        ylab = f"{pc_names[1]} ({evr[1] * 100:.1f}% var)"
+    else:
+        xlab = pc_names[0]
+        ylab = pc_names[1]
+
+    plt.xlabel(xlab)
+    plt.ylabel(ylab)
     plt.title(f"{pc_names[0]} vs {pc_names[1]} coloured by {field}")
     cb = plt.colorbar(sc)
     cb.set_label(field)
     plt.tight_layout()
     plt.savefig(outdir / f"scatter_{pc_names[0]}_{pc_names[1]}_by_{field}.png", dpi=300)
+    plt.close()
+
+
+def plot_pc_scatter_3d_categorical(scores, meta_rows, pc_names, category_field, outdir):
+    """
+    3D PC1–PC3 scatter plot coloured by a categorical field.
+    """
+    outdir = ensure_outdir(outdir)
+    if scores.shape[1] < 3:
+        print("Not enough PCs (need at least 3) for 3D scatter plot.")
+        return
+
+    cats = np.array([row.get(category_field, "NA") for row in meta_rows])
+    unique_cats = np.unique(cats)
+
+    base_colors = ["tab:blue", "tab:orange", "tab:green", "tab:red", "tab:purple"]
+    base_markers = ["o", "s", "^", "D", "P"]
+
+    color_map = {}
+    marker_map = {}
+    for i, c in enumerate(unique_cats):
+        color_map[c] = base_colors[i % len(base_colors)]
+        marker_map[c] = base_markers[i % len(base_markers)]
+
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection="3d")
+
+    for c in unique_cats:
+        mask = (cats == c)
+        ax.scatter(
+            scores[mask, 0],
+            scores[mask, 1],
+            scores[mask, 2],
+            c=color_map[c],
+            marker=marker_map[c],
+            s=15,
+            alpha=0.8,
+            label=str(c),
+        )
+
+    ax.set_xlabel(pc_names[0])
+    ax.set_ylabel(pc_names[1])
+    ax.set_zlabel(pc_names[2])
+    ax.set_title(f"3D PCA coloured by {category_field}")
+    ax.legend(title=category_field, fontsize=8)
+    plt.tight_layout()
+    plt.savefig(outdir / f"scatter3d_{pc_names[0]}_{pc_names[1]}_{pc_names[2]}_by_{category_field}.png", dpi=300)
     plt.close()
 
 
@@ -209,6 +279,11 @@ def build_parser():
         default="pattern",
         help="Metadata field to treat as categorical for colouring PC scatter (e.g., pattern).",
     )
+    p.add_argument(
+        "--plot-3d",
+        action="store_true",
+        help="If set, also generate a 3D PC1–PC3 scatter plot coloured by the category field.",
+    )
     return p
 
 
@@ -242,10 +317,14 @@ def main():
     plot_explained_variance_ratio(evr, outdir)
 
     print(f"Plotting {pc_names[0]} vs {pc_names[1]} by categorical field '{args.category_field}'...")
-    plot_pc_scatter_categorical(scores, meta_rows, pc_names, args.category_field, outdir)
+    plot_pc_scatter_categorical(scores, meta_rows, pc_names, args.category_field, outdir, evr=evr)
 
     print(f"Plotting {pc_names[0]} vs {pc_names[1]} by continuous field '{args.continuous_field}'...")
-    plot_pc_scatter_continuous(scores, meta_rows, pc_names, args.continuous_field, outdir)
+    plot_pc_scatter_continuous(scores, meta_rows, pc_names, args.continuous_field, outdir, evr=evr)
+
+    if args.plot_3d:
+        print(f"Plotting 3D PCA by categorical field '{args.category_field}'...")
+        plot_pc_scatter_3d_categorical(scores, meta_rows, pc_names, args.category_field, outdir)
 
     print(f"Plots saved under: {outdir}")
 
