@@ -4,3 +4,4 @@ tifffile
 pandas
 scikit-image
 scipy
+scipy
