@@ -2,7 +2,8 @@
 """
 synthetic_trabecular_v2_voting3d.py
 
-v2 synthetic trabecular generator upgraded with a 3D Binary Template Model (voting strategy):
+v2 synthetic trabecular generator upgraded with a 3D Binary Template Model (voting strategy)
++ Option 1 exports for PCA (2D representations).
 
 Pipeline per 3D sample:
 1) Generate k unique 2D binary lattices (plates+rods "growth-like" constructive network)
@@ -13,6 +14,7 @@ Pipeline per 3D sample:
 5) Output:
    - mask volume stack (TIFF)
    - optional grayscale volume stack (TIFF)
+   - Option 1: export 2D PNGs (mid-slice, MIP, mean) for PCA and inspection
    - per-sample metrics JSON + CSV logs
 
 Notes:
@@ -29,7 +31,7 @@ import csv
 import json
 import math
 from dataclasses import dataclass, asdict
-from typing import Tuple, List, Dict
+from typing import Tuple, List
 
 import numpy as np
 from PIL import Image
@@ -375,6 +377,13 @@ def build_parser():
     p.add_argument("--write-gray", action="store_true")
     p.add_argument("--soft-sigma-px", type=float, default=1.0)
 
+    # Option 1: 3D -> 2D exports for PCA
+    p.add_argument("--export-2d", action="store_true",
+                   help="Export 2D PNGs (mid-slice, MIP, mean) for PCA/inspection.")
+    p.add_argument("--export-2d-mode", type=str, default="all",
+                   choices=["all", "mid", "mip", "mean"],
+                   help="Which 2D representation(s) to export.")
+
     return p
 
 
@@ -410,6 +419,11 @@ def main():
         "volume_id",
         "mask_tif",
         "gray_tif",
+        "mid_png",
+        "mip_png",
+        "mean_png",
+        "gray_mid_png",
+        "gray_mip_png",
         "H", "W", "Z",
         "pixel_size_um",
         "z_step_um",
@@ -420,7 +434,9 @@ def main():
         "tau",
         "closing_iters",
         "alternate_close",
-        "pn", "rn", "bv_tv_2d_target"
+        "pn", "rn", "bv_tv_2d_target",
+        "export_2d",
+        "export_2d_mode"
     ])
 
     try:
@@ -430,10 +446,10 @@ def main():
             # 1) generate k unique 2D lattices
             k = int(vot_p.k_lattices)
             lattices = []
-            # make them explicitly non-replicated by advancing RNG deterministically
+            lattice_seeds = []
             for zi in range(k):
-                # derive a per-lattice seed from main RNG to guarantee uniqueness
                 sub_seed = int(rng.integers(0, 2**31 - 1))
+                lattice_seeds.append(sub_seed)
                 sub_rng = np.random.default_rng(sub_seed)
                 latt = generate_lattice_2d(H, W, sub_rng, lat_p)
                 lattices.append(latt)
@@ -446,17 +462,45 @@ def main():
             # 3) alternating 3D morphological closing
             voted01 = closing_3d(voted01, iters=vot_p.closing_iters, alternate=vot_p.alternate_structure)
 
+            # ---- Option 1: export 2D representations (binary) ----
+            mid_png = mip_png = mean_png = ""
+            if args.export_2d:
+                zmid = voted01.shape[0] // 2
+                mid_slice = (voted01[zmid] * 255).astype(np.uint8)
+                mip_xy = (voted01.max(axis=0) * 255).astype(np.uint8)
+                mean_xy = np.clip(voted01.mean(axis=0) * 255.0, 0, 255).astype(np.uint8)
+
+                mode = args.export_2d_mode
+                if mode in ("all", "mid"):
+                    mid_png = f"{volume_id}_mid.png"
+                    save_png(mid_slice, outdir / mid_png)
+                if mode in ("all", "mip"):
+                    mip_png = f"{volume_id}_mip.png"
+                    save_png(mip_xy, outdir / mip_png)
+                if mode in ("all", "mean"):
+                    mean_png = f"{volume_id}_mean.png"
+                    save_png(mean_xy, outdir / mean_png)
+
             # 4) grayscale volume (optional)
             gray_stack = None
+            gray_mid_png = gray_mip_png = ""
             if ren_p.write_gray:
                 soft = gaussian_blur(voted01.astype(np.float32), sigma=float(ren_p.soft_sigma_px))
                 soft = clamp01(soft) ** float(ren_p.partial_gamma)
                 gray_stack = (255.0 * soft).astype(np.uint8)
 
+                # ---- Option 1: export 2D representations (grayscale) ----
+                if args.export_2d:
+                    zmid = gray_stack.shape[0] // 2
+                    gray_mid_png = f"{volume_id}_gray_mid.png"
+                    gray_mip_png = f"{volume_id}_gray_mip.png"
+                    save_png(gray_stack[zmid].astype(np.uint8), outdir / gray_mid_png)
+                    save_png(gray_stack.max(axis=0).astype(np.uint8), outdir / gray_mip_png)
+
             # metrics
             bv_3d = float(np.mean(voted01 > 0))
 
-            # save outputs
+            # save outputs (3D stacks)
             mask_path = outdir / f"{volume_id}_mask.tif"
             gray_path = outdir / f"{volume_id}_gray.tif" if ren_p.write_gray else None
             meta_path = outdir / f"{volume_id}.json"
@@ -465,12 +509,21 @@ def main():
             if ren_p.write_gray and gray_stack is not None:
                 save_stack_u8(gray_stack, gray_path, z_step_um=float(args.z_step_um))
 
-            # metadata JSON with explicit params
+            # metadata JSON with explicit params + export listing
             meta = {
                 "volume_id": volume_id,
                 "files": {
                     "mask_tif": mask_path.name,
                     "gray_tif": gray_path.name if gray_path else None,
+                },
+                "exports_2d": {
+                    "enabled": bool(args.export_2d),
+                    "mode": str(args.export_2d_mode),
+                    "mid_png": mid_png or None,
+                    "mip_png": mip_png or None,
+                    "mean_png": mean_png or None,
+                    "gray_mid_png": gray_mid_png or None,
+                    "gray_mip_png": gray_mip_png or None,
                 },
                 "globals": {
                     "pixel_size_um": float(PIXEL_SIZE_UM),
@@ -481,6 +534,7 @@ def main():
                 "lattice_2d_params": asdict(lat_p),
                 "voting_3d_params": asdict(vot_p),
                 "render_params": asdict(ren_p),
+                "lattice_seeds": lattice_seeds,
                 "metrics": {
                     "bv_tv_3d": bv_3d,
                     "note": "BV/TV here is a 3D occupancy fraction of the voted binary template."
@@ -494,6 +548,11 @@ def main():
                 "volume_id": volume_id,
                 "mask_tif": mask_path.name,
                 "gray_tif": gray_path.name if gray_path else "",
+                "mid_png": mid_png,
+                "mip_png": mip_png,
+                "mean_png": mean_png,
+                "gray_mid_png": gray_mid_png,
+                "gray_mip_png": gray_mip_png,
                 "H": H, "W": W, "Z": int(voted01.shape[0]),
                 "pixel_size_um": float(PIXEL_SIZE_UM),
                 "z_step_um": float(args.z_step_um),
@@ -509,6 +568,8 @@ def main():
                 "pn": int(lat_p.pn),
                 "rn": int(lat_p.rn),
                 "bv_tv_2d_target": float(lat_p.bv_tv),
+                "export_2d": bool(args.export_2d),
+                "export_2d_mode": str(args.export_2d_mode),
             })
 
             print(f"[{vi+1}/{args.n_volumes}] Saved {volume_id} | 3D BV/TV={bv_3d:.3f}")
