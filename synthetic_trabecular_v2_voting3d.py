@@ -2,7 +2,7 @@
 """
 synthetic_trabecular_v3_connectivity_first.py
 
-Synthetic trabecular 3D generator with "connectivity-first" controls.
+Synthetic trabecular 3D generator with "connectivity-first" controls + 3D component bridging.
 
 What’s new vs your v2:
 1) Connectivity metrics are computed per 3D volume:
@@ -20,6 +20,9 @@ What’s new vs your v2:
 5) Adds optional parameter sweep mode for interpretability/PCA:
    - sweep tau and/or window size lists
 6) Logs metrics to both JSON and CSV.
+7) NEW: Optional 3D component bridging to actively enforce global connectivity:
+   - bridges largest components after voting+closing (tubular connectors)
+   - optional smoothing dilation after bridging
 
 Outputs per accepted volume:
 - mask 3D TIFF
@@ -209,12 +212,11 @@ def connectivity_metrics_3d(vol01: np.ndarray) -> Dict[str, Optional[float]]:
     bone_vox = int(bone.sum())
 
     if bone_vox == 0:
-        return {"cc_count": int(n), "lcc_frac": 0.0}
+        return {"cc_count": float(n), "lcc_frac": 0.0}
 
     counts = np.bincount(lab.ravel())
-    # counts[0] background
     if len(counts) <= 1:
-        return {"cc_count": int(n), "lcc_frac": 1.0}
+        return {"cc_count": float(n), "lcc_frac": 1.0}
 
     lcc = int(counts[1:].max())
     return {"cc_count": float(n), "lcc_frac": float(lcc / bone_vox)}
@@ -242,14 +244,103 @@ def thickness_spacing_proxies(vol01: np.ndarray) -> Dict[str, Optional[float]]:
 
 
 # -----------------------------
+# NEW: 3D bridging utilities (generator enforcement)
+# -----------------------------
+def draw_tube_3d(vol01: np.ndarray, p0, p1, radius: int) -> np.ndarray:
+    """
+    Draw a thick 3D tube between points p0 and p1 into vol01.
+    vol01: uint8 (Z,H,W) with 0/1.
+    p0/p1: (z,y,x)
+    radius: voxel radius
+    """
+    Z, H, W = vol01.shape
+    z0, y0, x0 = [float(v) for v in p0]
+    z1, y1, x1 = [float(v) for v in p1]
+
+    n = int(max(abs(z1 - z0), abs(y1 - y0), abs(x1 - x0)) * 2) + 1
+    zz = np.linspace(z0, z1, n)
+    yy = np.linspace(y0, y1, n)
+    xx = np.linspace(x0, x1, n)
+
+    rr = int(max(1, radius))
+    for z, y, x in zip(zz, yy, xx):
+        zi = int(round(z))
+        yi = int(round(y))
+        xi = int(round(x))
+        zmin, zmax = max(0, zi - rr), min(Z, zi + rr + 1)
+        ymin, ymax = max(0, yi - rr), min(H, yi + rr + 1)
+        xmin, xmax = max(0, xi - rr), min(W, xi + rr + 1)
+
+        zgrid, ygrid, xgrid = np.ogrid[zmin:zmax, ymin:ymax, xmin:xmax]
+        mask = (zgrid - zi) ** 2 + (ygrid - yi) ** 2 + (xgrid - xi) ** 2 <= rr * rr
+        vol01[zmin:zmax, ymin:ymax, xmin:xmax][mask] = 1
+
+    return vol01
+
+
+def bridge_components_3d(vol01: np.ndarray, max_bridges: int = 3, radius: int = 2, smooth: int = 0) -> np.ndarray:
+    """
+    Actively connect disconnected components in 3D by drawing tubes between component centroids.
+    - Labels bone with 26-connectivity
+    - Chooses largest components and connects largest -> next largest sequentially
+    - Optional dilation smoothing
+
+    Requires scipy.
+    """
+    if not _HAS_SCIPY or max_bridges <= 0:
+        return vol01
+
+    bone = vol01.astype(bool)
+    st = np.ones((3, 3, 3), dtype=bool)  # 26-connectivity
+    lab, n = ndi.label(bone, structure=st)
+    if n <= 1:
+        return vol01
+
+    counts = np.bincount(lab.ravel())
+    comp_ids = np.argsort(counts[1:])[::-1] + 1  # descending by size, skip background
+    # Need at least 2 comps; cap how many comps we consider
+    comp_ids = comp_ids[: max(2, min(len(comp_ids), max_bridges + 1))]
+
+    centroids = []
+    for cid in comp_ids:
+        coords = np.argwhere(lab == cid)
+        if coords.size == 0:
+            continue
+        cz, cy, cx = coords.mean(axis=0)
+        centroids.append((cz, cy, cx))
+
+    if len(centroids) < 2:
+        return vol01
+
+    out = (vol01 > 0).astype(np.uint8)
+
+    base = centroids[0]
+    bridges_done = 0
+    for target in centroids[1:]:
+        out = draw_tube_3d(out, base, target, radius=int(radius))
+        bridges_done += 1
+        if bridges_done >= int(max_bridges):
+            break
+
+    if smooth and smooth > 0:
+        out = ndi.binary_dilation(
+            out.astype(bool),
+            structure=ndi.generate_binary_structure(3, 1),
+            iterations=int(smooth),
+        ).astype(np.uint8)
+
+    return out
+
+
+# -----------------------------
 # 2D lattice generator
 # -----------------------------
 def generate_lattice_2d(H: int, W: int, rng: np.random.Generator, p: LatticeParams2D) -> np.ndarray:
     plate_centers: List[Tuple[float, float]] = []
     rod_midpoints: List[Tuple[float, float]] = []
 
-    nnd_pp_min_px = max(1, um_to_px(p.nnd_pp_min_um))
-    nnd_rr_min_px = max(1, um_to_px(p.nnd_rr_min_um))
+    nnd_pp_min_px = max(1, int(round(p.nnd_pp_min_um / PIXEL_SIZE_UM)))
+    nnd_rr_min_px = max(1, int(round(p.nnd_rr_min_um / PIXEL_SIZE_UM)))
 
     mask = np.zeros((H, W), dtype=np.uint8)
 
@@ -262,7 +353,6 @@ def generate_lattice_2d(H: int, W: int, rng: np.random.Generator, p: LatticePara
         PT = rand_range(rng, p.plate_thickness_um)
         t_px = max(1, um_to_px(PT))
 
-        # length derived from area proxy
         px_um = PIXEL_SIZE_UM
         length_px = max(8.0, PA / (max(1.0, t_px) * (px_um ** 2)))
 
@@ -278,7 +368,7 @@ def generate_lattice_2d(H: int, W: int, rng: np.random.Generator, p: LatticePara
         plate_centers.append((cx, cy))
         placed_plates += 1
 
-    # rods: prefer anchoring on plate centers sometimes to bridge larger structures
+    # rods (prefer anchoring on plate centers sometimes to create long connections)
     attempts = 0
     placed_rods = 0
     ys_b, xs_b = np.where(mask > 0)
@@ -296,7 +386,6 @@ def generate_lattice_2d(H: int, W: int, rng: np.random.Generator, p: LatticePara
         dx = math.cos(th)
         dy = math.sin(th)
 
-        # anchor selection
         if plate_centers and rng.random() < 0.45:
             cx, cy = plate_centers[int(rng.integers(0, len(plate_centers)))]
             x0, y0 = float(cx), float(cy)
@@ -328,7 +417,7 @@ def generate_lattice_2d(H: int, W: int, rng: np.random.Generator, p: LatticePara
 
         ys_b, xs_b = np.where(mask > 0)
 
-    # rough BV/TV tuning with dilation/erosion
+    # rough BV/TV tuning
     bv = area_fraction(mask)
     if _HAS_SCIPY:
         st = ndi.generate_binary_structure(2, 1)
@@ -353,8 +442,6 @@ def vote_3d(stack01: np.ndarray, v: Voting3DParams) -> np.ndarray:
     Applies 3D sliding-window voting using convolution.
     Optional continuity bias to encourage stable networks.
     """
-    Z, H, W = stack01.shape
-
     wy, wx, wz = int(v.win_y), int(v.win_x), int(v.win_z)
     wy = max(1, wy | 1)
     wx = max(1, wx | 1)
@@ -366,14 +453,13 @@ def vote_3d(stack01: np.ndarray, v: Voting3DParams) -> np.ndarray:
     if _HAS_SCIPY:
         votes = ndi.convolve(stack01.astype(np.uint16), kernel.astype(np.uint16), mode="constant", cval=0)
 
-        # Optional continuity bias: expand stack slightly then add as an extra "vote"
         if v.z_continuity_bias:
-            st = ndi.generate_binary_structure(3, 1)  # 6-neighborhood
+            st = ndi.generate_binary_structure(3, 1)
             prior = ndi.binary_dilation(stack01.astype(bool), structure=st, iterations=1)
             votes = votes + prior.astype(votes.dtype)
             window_size += 1
     else:
-        # fallback naive
+        Z, H, W = stack01.shape
         padz, pady, padx = wz // 2, wy // 2, wx // 2
         padded = np.pad(stack01.astype(np.uint8), ((padz, padz), (pady, pady), (padx, padx)), mode="constant")
         votes = np.zeros_like(stack01, dtype=np.uint16)
@@ -383,8 +469,7 @@ def vote_3d(stack01: np.ndarray, v: Voting3DParams) -> np.ndarray:
                     votes += padded[dz:dz + Z, dy:dy + H, dx:dx + W]
 
     thr = int(math.ceil(float(v.tau) * window_size))
-    out = (votes >= thr).astype(np.uint8)
-    return out
+    return (votes >= thr).astype(np.uint8)
 
 
 def closing_3d(vol01: np.ndarray, iters: int, alternate: bool) -> np.ndarray:
@@ -435,7 +520,7 @@ def init_csv(path: Path, fieldnames: List[str]):
 # CLI
 # -----------------------------
 def build_parser():
-    p = argparse.ArgumentParser(description="Synthetic trabecular generator (connectivity-first v3).")
+    p = argparse.ArgumentParser(description="Synthetic trabecular generator (connectivity-first v3 + bridging).")
     p.add_argument("--outdir", type=str, default="data/v3_connectivity_first")
     p.add_argument("--size", type=int, default=512)
     p.add_argument("--n-volumes", type=int, default=50)
@@ -463,6 +548,16 @@ def build_parser():
                    help="Attempts per volume to meet connectivity. Best candidate kept.")
     p.add_argument("--auto-tune", action="store_true",
                    help="Auto-adjust tau/closing slightly to improve connectivity during retries.")
+
+    # NEW: bridging controls
+    p.add_argument("--bridge-3d", action="store_true",
+                   help="Actively bridge disconnected components in 3D after voting+closing.")
+    p.add_argument("--max-bridges", type=int, default=3,
+                   help="Maximum number of bridges to add per attempt.")
+    p.add_argument("--bridge-radius", type=int, default=2,
+                   help="Radius (voxels) of the bridging tube.")
+    p.add_argument("--bridge-smooth", type=int, default=1,
+                   help="Optional dilation iterations after bridging to smooth connections.")
 
     # render
     p.add_argument("--z-step-um", type=float, default=Z_STEP_UM)
@@ -512,29 +607,20 @@ def generate_one_volume(
     args,
     outdir: Path,
 ) -> Dict[str, object]:
-    """
-    Returns dict containing:
-      voted01 (uint8 Z,H,W), gray_stack (optional), metrics dict, meta dict, exports dict
-    """
-
     best_candidate = None  # (score_tuple, voted01, gray_stack, metrics, lattice_seeds, used_params)
 
-    # local tunables for auto-tune
     tau_base = float(vot_p.tau)
     close_base = int(vot_p.closing_iters)
 
     for attempt in range(int(args.max_tries)):
-        # Optionally adjust parameters across attempts
         if args.auto_tune and attempt > 0:
-            # relax tau a bit (denser -> more connectivity) down to 0.40
             tau = max(0.40, tau_base - 0.02 * attempt)
-            # increase closing slightly up to +3
             closing_iters = min(close_base + attempt // 2, close_base + 3)
         else:
             tau = tau_base
             closing_iters = close_base
 
-        # 1) generate k unique 2D lattices
+        # 1) generate k 2D lattices
         k = int(vot_p.k_lattices)
         lattices = []
         lattice_seeds = []
@@ -553,8 +639,17 @@ def generate_one_volume(
 
         voted01 = vote_3d(stack01, vot_local)
 
-        # 3) closing
+        # 3) close
         voted01 = closing_3d(voted01, iters=vot_local.closing_iters, alternate=vot_local.alternate_structure)
+
+        # NEW: bridge components (generator enforcement)
+        if args.bridge_3d:
+            voted01 = bridge_components_3d(
+                voted01,
+                max_bridges=int(args.max_bridges),
+                radius=int(args.bridge_radius),
+                smooth=int(args.bridge_smooth),
+            )
 
         # 4) metrics
         bv_3d = float(np.mean(voted01 > 0))
@@ -576,7 +671,6 @@ def generate_one_volume(
             soft = clamp01(soft) ** float(ren_p.partial_gamma)
             gray_stack = (255.0 * soft).astype(np.uint8)
 
-        # scoring: prioritize connectivity, then BV/TV closeness, then thickness proxy (optional)
         lcc = metrics["lcc_frac"] if metrics["lcc_frac"] is not None else 0.0
         score = (
             float(lcc),
@@ -587,6 +681,10 @@ def generate_one_volume(
         used_params = {
             "tau_used": float(tau),
             "closing_iters_used": int(closing_iters),
+            "bridge_3d": bool(args.bridge_3d),
+            "max_bridges": int(args.max_bridges),
+            "bridge_radius": int(args.bridge_radius),
+            "bridge_smooth": int(args.bridge_smooth),
         }
 
         if best_candidate is None or score > best_candidate[0]:
@@ -669,6 +767,10 @@ def generate_one_volume(
         "lattice_seeds": lattice_seeds,
         "used_params": used_params,
         "metrics": metrics,
+        "notes": [
+            "Connectivity-first generator: LCC fraction is primary acceptance metric.",
+            "Optional 3D bridging enforces global connectivity by drawing tubular connectors between largest components."
+        ],
     }
 
     meta_path = outdir / f"{volume_id}.json"
@@ -716,7 +818,6 @@ def main():
         partial_gamma=float(args.gamma),
     )
 
-    # CSV schema
     images_csv = outdir / "volumes.csv"
     fieldnames = [
         "volume_id",
@@ -743,6 +844,10 @@ def main():
         "min_lcc_frac",
         "max_tries",
         "auto_tune",
+        "bridge_3d",
+        "max_bridges",
+        "bridge_radius",
+        "bridge_smooth",
         "tau_used",
         "closing_iters_used",
         "bv_tv_3d",
@@ -762,37 +867,27 @@ def main():
         if not tau_list:
             tau_list = [float(args.tau)]
         if not win_list:
-            win_list = [int(args.win_x)]  # use x if not provided
+            win_list = [int(args.win_x)]
 
-        sweep_grid = []
-        for t in tau_list:
-            for w in win_list:
-                sweep_grid.append((float(t), int(w)))
-
-        # We'll produce n-volumes for each sweep condition
-        run_plan = []
-        for (t, w) in sweep_grid:
-            for i in range(int(args.n_volumes)):
-                run_plan.append((t, w, i))
+        sweep_grid = [(float(t), int(w)) for t in tau_list for w in win_list]
+        run_plan = [(t, w, i) for (t, w) in sweep_grid for i in range(int(args.n_volumes))]
         print(f"Sweep enabled: {len(sweep_grid)} conditions, total volumes planned: {len(run_plan)}")
     else:
         run_plan = [(float(args.tau), int(args.win_x), i) for i in range(int(args.n_volumes))]
 
     try:
         for idx, (tau_val, win_val, vi) in enumerate(run_plan):
-            # voting params per condition
             vot_p = Voting3DParams(
                 k_lattices=int(args.k),
                 win_x=int(win_val),
-                win_y=int(win_val) if tau_list or win_list else int(args.win_y),
-                win_z=int(win_val) if tau_list or win_list else int(args.win_z),
+                win_y=int(win_val) if (tau_list or win_list) else int(args.win_y),
+                win_z=int(win_val) if (tau_list or win_list) else int(args.win_z),
                 tau=float(tau_val),
                 closing_iters=int(args.closing_iters),
                 alternate_structure=(not bool(args.no_alt_close)),
                 z_continuity_bias=(not bool(args.no_z_bias)),
             )
 
-            # condition folder for clean sweep outputs
             if tau_list or win_list:
                 cond_dir = outdir / f"sweep_tau_{tau_val:.3f}_win_{win_val}"
                 cond_dir.mkdir(parents=True, exist_ok=True)
@@ -848,6 +943,10 @@ def main():
                 "min_lcc_frac": float(args.min_lcc_frac),
                 "max_tries": int(args.max_tries),
                 "auto_tune": bool(args.auto_tune),
+                "bridge_3d": bool(args.bridge_3d),
+                "max_bridges": int(args.max_bridges),
+                "bridge_radius": int(args.bridge_radius),
+                "bridge_smooth": int(args.bridge_smooth),
                 "tau_used": float(used["tau_used"]),
                 "closing_iters_used": int(used["closing_iters_used"]),
                 "bv_tv_3d": float(metrics["bv_tv_3d"]),
@@ -863,7 +962,10 @@ def main():
 
             lcc_display = metrics["lcc_frac"]
             lcc_str = f"{lcc_display:.3f}" if isinstance(lcc_display, (float, int)) else "None"
-            print(f"[{idx+1}/{len(run_plan)}] {volume_id} | BV/TV={metrics['bv_tv_3d']:.3f} | LCC={lcc_str} | tau_used={used['tau_used']:.3f}")
+            print(
+                f"[{idx+1}/{len(run_plan)}] {volume_id} | BV/TV={metrics['bv_tv_3d']:.3f} | "
+                f"LCC={lcc_str} | tau_used={used['tau_used']:.3f} | bridge={bool(args.bridge_3d)}"
+            )
 
     finally:
         f_img.close()
@@ -871,7 +973,7 @@ def main():
     print(f"\nDone. Written to: {outdir}")
     if not _HAS_SCIPY:
         print(
-            "Note: scipy not available → voting uses slow fallback, and connectivity/EDT/morphology are limited.\n"
+            "Note: scipy not available → voting uses slow fallback and bridging/connectivity/EDT/morphology are limited.\n"
             "Install scipy for best results: pip install scipy"
         )
 
