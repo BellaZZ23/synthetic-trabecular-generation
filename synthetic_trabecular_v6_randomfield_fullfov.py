@@ -44,6 +44,8 @@ import json
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Dict, Optional, Tuple
+from skimage.measure import euler_number
+
 
 import numpy as np
 from PIL import Image
@@ -246,7 +248,7 @@ def conn_density_euler(vol01: np.ndarray, pixel_um: float, z_um: float) -> Dict[
     Conventions vary; treat as a proxy.
     """
     bone = vol01.astype(bool)
-    eul = float(ndi.euler_number(bone, connectivity=3))
+    eul = float(euler_number(bone, connectivity=3))
     conn = float(1.0 - eul)
 
     voxel_vol_um3 = float(pixel_um) * float(pixel_um) * float(z_um)
