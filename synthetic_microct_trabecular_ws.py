@@ -1,4 +1,5 @@
-synthetic_microct_trabecular_ws.py
+#!/usr/bin/env python3
+
 """
 synthetic_microct_trabecular_ws.py
 
