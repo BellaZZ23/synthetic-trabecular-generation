@@ -7,7 +7,8 @@ v14 (FULL FOV) — no cylindrical ROI mask.
 Upgrades vs v13:
 - SAFE curl-warp: automatically falls back to a 2D divergence-free warp per-slice when Z < 3
   (so --z 1 works and won't crash np.gradient).
-- Docstring is raw (r"""...""") to avoid Windows backslash escape warnings.
+- Docstring is raw to avoid Windows backslash escape warnings.
+
 
 Still includes:
 - Curvature via divergence-free curl warp (3D or 2D fallback)
