@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """
-synthetic_trabecular_v13_fullfov_microct_cvlike.py
+synthetic_trabecular_v13_hybrid_thin_connected_fullfov.py
 
-v13 (FULL FOV) — no cylindrical ROI mask.
+v13 HYBRID (full FOV) — combines:
+- v11-style connectivity (plate_bias + branch_link_bias)  ✅ good junctions/connectivity
+- v13-style micro-CT grayscale synthesis + optional CV-like segmentation from grayscale
+- Optional curl-warp curvature + optional Hessian rod/plate enhancement (kept, but you can dial strengths down)
+- NEW: explicit thinning stage after connectivity morphology (thin_erode_iters) + tiny reconnect (reconnect_close_iters)
 
-What this version does:
-- Better curvature via divergence-free "curl noise" warp
-- More bone-like rod/plate topology via Hessian eigenvalue enhancement
-- Correct BV/TV handling with invert_phase (fixes the v12 inversion bug)
-- Optional micro-CT-like grayscale: partial-volume blur + low-frequency shading + marrow texture + noise
-- Optional "CV-like" segmentation from grayscale (fast stand-in):
-    - Sauvola local threshold (or Otsu) + gentle morphology
-  Useful to produce less fragmented binaries in low-BV/TV cases.
+Key idea:
+(1) Make a connected network (branch/plate bias + mild close)
+(2) Thin it (erosion) without destroying it
+(3) Optionally reconnect slightly (small closing)
 
 Outputs (in --outdir):
 - mid.png           (binary from field, mid-slice)
-- mask.tif          (binary from field, 0/255)
+- mask.tif          (binary stack, 0/255)
 - gray_mid.png      (if --write-gray 1)
 - gray.tif          (if --write-gray 1)
 - metrics.json
@@ -30,17 +30,14 @@ Dependencies:
 - scikit-image (euler_number, threshold_otsu, threshold_sauvola)
 
 PowerShell example:
-python .\synthetic_trabecular_v13_fullfov_microct_cvlike.py `
-  --outdir data\v13_demo `
+python .\synthetic_trabecular_v13_hybrid_thin_connected_fullfov.py `
+  --outdir data\v13_hybrid_demo `
   --xy 256 --z 160 `
   --seed 23 `
-  --bvtv 0.18 `
+  --bvtv 0.20 `
   --invert-phase 1 `
   --write-gray 1 `
-  --segment-from-gray 1 `
-  --seg-method sauvola `
-  --sauvola-window 51 `
-  --sauvola-k 0.15
+  --segment-from-gray 0
 """
 
 from __future__ import annotations
@@ -68,14 +65,19 @@ class FieldParams:
     # Base smoothing of random field (higher -> larger features)
     sigma: float = 4.2
 
-    # Rod/plate enhancement (Hessian-based)
-    rod_strength: float = 0.85
-    plate_strength: float = 0.65
-    hessian_sigma: float = 1.6
+    # v11-style biases (connectivity + plates)
+    plate_strength_v11: float = 0.65
+    branch_strength: float = 0.85
 
-    # Curvature warp (curl noise)
+    # Curvature warp (curl noise). Set warp_amp=0 to disable.
     warp_sigma: float = 12.0
     warp_amp: float = 3.5
+
+    # Optional Hessian rod/plate enhancement (can help shape, but may fragment if too strong)
+    use_hessian: bool = True
+    rod_strength: float = 0.35
+    plate_strength_hessian: float = 0.25
+    hessian_sigma: float = 1.6
 
     # Final smoothing
     final_sigma: float = 0.7
@@ -88,10 +90,16 @@ class FieldParams:
 
 @dataclass
 class MorphParams:
-    # Gentle cleanup/bridging on the field-threshold binary
+    # Stage A: connectivity bridging
     dilate_iters: int = 1
     close_iters: int = 2
     open_iters: int = 0
+
+    # Stage B: thin trabeculae (0..2 typical)
+    thin_erode_iters: int = 1
+
+    # Stage C: tiny reconnect after thinning (0..2 typical)
+    reconnect_close_iters: int = 1
 
 
 @dataclass
@@ -161,7 +169,31 @@ def clamp01(x: np.ndarray) -> np.ndarray:
 
 
 # -----------------------------
-# Field shaping (curl warp + Hessian rod/plate)
+# v11-style biases (connectivity + plates)
+# -----------------------------
+def plate_bias(field: np.ndarray, strength: float) -> np.ndarray:
+    """Encourages plate-like structures by local integration along planes."""
+    if strength <= 0:
+        return field
+    fx = ndi.uniform_filter(field, size=(1, 1, 9))
+    fy = ndi.uniform_filter(field, size=(1, 9, 1))
+    fz = ndi.uniform_filter(field, size=(9, 1, 1))
+    plates = (fx + fy + fz) / 3.0
+    return (1.0 - strength) * field + strength * plates
+
+def branch_link_bias(field: np.ndarray, strength: float) -> np.ndarray:
+    """Boost ridge/junction structures to improve connectivity."""
+    if strength <= 0:
+        return field
+    gz, gy, gx = np.gradient(field)
+    grad_mag = np.sqrt(gx * gx + gy * gy + gz * gz)
+    grad_mag = grad_mag / (float(grad_mag.max()) + 1e-6)
+    ridge = ndi.gaussian_filter(grad_mag, sigma=2.0)
+    return field + float(strength) * ridge
+
+
+# -----------------------------
+# Curvature warp (curl noise)
 # -----------------------------
 def curl_warp_field(field: np.ndarray, rng: np.random.Generator,
                     warp_sigma: float, warp_amp: float) -> np.ndarray:
@@ -195,11 +227,11 @@ def curl_warp_field(field: np.ndarray, rng: np.random.Generator,
     warped = map_coordinates(field, coords, order=1, mode="reflect")
     return warped.astype(np.float32)
 
+
+# -----------------------------
+# Optional Hessian rod/plate enhancement (kept light)
+# -----------------------------
 def hessian_eigs_3d(f: np.ndarray, sigma: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Hessian eigenvalues at scale sigma (Gaussian second derivatives).
-    Returns eigenvalues sorted by absolute value: |l1| <= |l2| <= |l3|.
-    """
     fxx = ndi.gaussian_filter(f, sigma=sigma, order=(0, 0, 2))
     fyy = ndi.gaussian_filter(f, sigma=sigma, order=(0, 2, 0))
     fzz = ndi.gaussian_filter(f, sigma=sigma, order=(2, 0, 0))
@@ -214,8 +246,7 @@ def hessian_eigs_3d(f: np.ndarray, sigma: float) -> Tuple[np.ndarray, np.ndarray
             np.stack([fxz, fxy, fxx], axis=-1),
         ],
         axis=-2,
-    )  # (..., 3, 3)
-
+    )
     w = np.linalg.eigvalsh(H.reshape(-1, 3, 3)).reshape(f.shape + (3,))
     idx = np.argsort(np.abs(w), axis=-1)
     w_sorted = np.take_along_axis(w, idx, axis=-1)
@@ -223,13 +254,11 @@ def hessian_eigs_3d(f: np.ndarray, sigma: float) -> Tuple[np.ndarray, np.ndarray
     return l1, l2, l3
 
 def rod_plate_enhance(field: np.ndarray, strength_rod: float, strength_plate: float, sigma: float) -> np.ndarray:
-    """Heuristic rod/plate enhancement from Hessian eigenvalue patterns."""
     if strength_rod <= 0 and strength_plate <= 0:
         return field
 
     l1, l2, l3 = hessian_eigs_3d(field, sigma=sigma)
     eps = 1e-6
-
     r1 = np.abs(l1) / (np.abs(l3) + eps)
     r2 = np.abs(l2) / (np.abs(l3) + eps)
 
@@ -241,11 +270,13 @@ def rod_plate_enhance(field: np.ndarray, strength_rod: float, strength_plate: fl
 
     return field + float(strength_plate) * plate + float(strength_rod) * rod
 
+
+# -----------------------------
+# Field generation (HYBRID)
+# -----------------------------
 def generate_field(shape: Tuple[int, int, int], fp: FieldParams, rng: np.random.Generator) -> np.ndarray:
-    # Base GRF
     f = rng.normal(0, 1, size=shape).astype(np.float32)
 
-    # Anisotropic smoothing helps the “loaded” look
     sig = float(fp.sigma)
     f = ndi.gaussian_filter(
         f,
@@ -255,15 +286,19 @@ def generate_field(shape: Tuple[int, int, int], fp: FieldParams, rng: np.random.
     # Curvature
     f = curl_warp_field(f, rng, warp_sigma=float(fp.warp_sigma), warp_amp=float(fp.warp_amp))
 
-    # Rod/plate
-    f = rod_plate_enhance(
-        f,
-        strength_rod=float(fp.rod_strength),
-        strength_plate=float(fp.plate_strength),
-        sigma=float(fp.hessian_sigma),
-    )
+    # v11-style connectivity / plates (THIS is the key for connected networks)
+    f = plate_bias(f, float(fp.plate_strength_v11))
+    f = branch_link_bias(f, float(fp.branch_strength))
 
-    # Final blur
+    # Optional Hessian (kept light by default)
+    if bool(fp.use_hessian):
+        f = rod_plate_enhance(
+            f,
+            strength_rod=float(fp.rod_strength),
+            strength_plate=float(fp.plate_strength_hessian),
+            sigma=float(fp.hessian_sigma),
+        )
+
     if float(fp.final_sigma) > 0:
         f = ndi.gaussian_filter(f, sigma=float(fp.final_sigma))
 
@@ -291,17 +326,28 @@ def threshold_to_bvtv(field: np.ndarray, bvtv: float, invert_phase: bool) -> Tup
 def apply_morphology(vol01: np.ndarray, mp: MorphParams) -> np.ndarray:
     v = vol01.astype(bool)
     st = ndi.generate_binary_structure(3, 1)
+
+    # Stage A: connectivity/bridging (like v11)
     if int(mp.open_iters) > 0:
         v = ndi.binary_opening(v, structure=st, iterations=int(mp.open_iters))
     if int(mp.dilate_iters) > 0:
         v = ndi.binary_dilation(v, structure=st, iterations=int(mp.dilate_iters))
     if int(mp.close_iters) > 0:
         v = ndi.binary_closing(v, structure=st, iterations=int(mp.close_iters))
+
+    # Stage B: thin trabeculae
+    if int(mp.thin_erode_iters) > 0:
+        v = ndi.binary_erosion(v, structure=st, iterations=int(mp.thin_erode_iters))
+
+    # Stage C: small reconnect
+    if int(mp.reconnect_close_iters) > 0:
+        v = ndi.binary_closing(v, structure=st, iterations=int(mp.reconnect_close_iters))
+
     return v.astype(np.uint8)
 
 
 # -----------------------------
-# Micro-CT grayscale synthesis (FULL FOV)
+# Micro-CT grayscale (FULL FOV)
 # -----------------------------
 def lowfreq_shading(shape: Tuple[int, int, int], rng: np.random.Generator, sigma: float, amp: float) -> np.ndarray:
     f = rng.normal(0, 1, size=shape).astype(np.float32)
@@ -316,26 +362,21 @@ def marrow_texture(shape: Tuple[int, int, int], rng: np.random.Generator, sigma:
     return float(amp) * t
 
 def microct_gray_fullfov(vol01: np.ndarray, gp: GrayParams, rng: np.random.Generator) -> np.ndarray:
-    # Partial volume (blurred occupancy)
     x = vol01.astype(np.float32)
     if float(gp.pve_sigma) > 0:
         x = ndi.gaussian_filter(x, sigma=float(gp.pve_sigma))
     x = clamp01(x)
 
-    # Bone / marrow mapping
     gray = float(gp.marrow_mean) + x * (float(gp.bone_mean) - float(gp.marrow_mean))
 
-    # Shading + marrow texture across FOV
     gray = gray + lowfreq_shading(gray.shape, rng, sigma=float(gp.shading_sigma), amp=float(gp.shading_amp))
     gray = gray + marrow_texture(gray.shape, rng, sigma=float(gp.marrow_tex_sigma), amp=float(gp.marrow_tex_amp))
 
-    # Noise
     if float(gp.bg_texture_sd) > 0:
         gray += rng.normal(0.0, float(gp.bg_texture_sd), size=gray.shape).astype(np.float32)
     if float(gp.ct_noise_sd) > 0:
         gray += rng.normal(0.0, float(gp.ct_noise_sd), size=gray.shape).astype(np.float32)
 
-    # Unsharp
     if float(gp.unsharp) > 0:
         blurred = ndi.gaussian_filter(gray, sigma=max(0.6, float(gp.pve_sigma)))
         gray = gray + float(gp.unsharp) * (gray - blurred)
@@ -344,7 +385,7 @@ def microct_gray_fullfov(vol01: np.ndarray, gp: GrayParams, rng: np.random.Gener
 
 
 # -----------------------------
-# CV-like segmentation on grayscale (fast stand-in)
+# CV-like segmentation on grayscale
 # -----------------------------
 def segment_from_gray(gray_u8: np.ndarray, sp: SegParams) -> Tuple[np.ndarray, Dict[str, Any]]:
     g = gray_u8.astype(np.float32)
@@ -358,7 +399,7 @@ def segment_from_gray(gray_u8: np.ndarray, sp: SegParams) -> Tuple[np.ndarray, D
         info = {"seg_method": "otsu", "thr": thr}
     elif method == "sauvola":
         win = int(sp.sauvola_window)
-        win = max(15, win | 1)  # odd and >= 15
+        win = max(15, win | 1)  # odd, >= 15
         thr_map = threshold_sauvola(g, window_size=win, k=float(sp.sauvola_k))
         bone = (g >= thr_map)
         info = {"seg_method": "sauvola", "window": win, "k": float(sp.sauvola_k)}
@@ -411,9 +452,9 @@ def euler_conn(vol01: np.ndarray) -> Dict[str, float]:
 # CLI + main
 # -----------------------------
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="v13 full-FOV trabecular generator (microCT gray + CV-like seg option).")
+    p = argparse.ArgumentParser(description="v13 HYBRID full-FOV trabecular generator (connected + thin + microCT gray).")
 
-    p.add_argument("--outdir", type=str, default="data/v13")
+    p.add_argument("--outdir", type=str, default="data/v13_hybrid")
     p.add_argument("--xy", type=int, default=256)
     p.add_argument("--z", type=int, default=160)
     p.add_argument("--seed", type=int, default=23)
@@ -424,16 +465,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--voxel-um", type=float, default=10.0)
     p.add_argument("--z-um", type=float, default=10.0)
 
-    # Grayscale
     p.add_argument("--write-gray", type=int, default=1)
 
-    # Segmentation from grayscale (CV-like stand-in)
     p.add_argument("--segment-from-gray", type=int, default=0)
     p.add_argument("--seg-method", type=str, default="sauvola", choices=["sauvola", "otsu"])
     p.add_argument("--sauvola-window", type=int, default=51)
     p.add_argument("--sauvola-k", type=float, default=0.15)
 
-    # Quick morphology knobs for gray-seg (optional)
     p.add_argument("--seg-close-iters", type=int, default=2)
     p.add_argument("--seg-open-iters", type=int, default=1)
     p.add_argument("--seg-preblur", type=float, default=1.0)
@@ -455,9 +493,32 @@ def main():
     voxel_um_z = float(args.z_um)
     invert_phase = bool(int(args.invert_phase))
 
-    # Default params (reasonable starting point)
-    fp = FieldParams()
-    mp = MorphParams()
+    # Field defaults: keep Hessian light; connectivity is mainly from v11 biases
+    fp = FieldParams(
+        sigma=4.2,
+        plate_strength_v11=0.65,
+        branch_strength=0.90,
+        warp_sigma=12.0,
+        warp_amp=3.5,
+        use_hessian=True,
+        rod_strength=0.35,
+        plate_strength_hessian=0.25,
+        hessian_sigma=1.6,
+        final_sigma=0.7,
+        aniso_z=1.15,
+        aniso_y=1.00,
+        aniso_x=1.00,
+    )
+
+    # Morph defaults: connected then thin then reconnect
+    mp = MorphParams(
+        dilate_iters=1,
+        close_iters=2,
+        open_iters=0,
+        thin_erode_iters=1,
+        reconnect_close_iters=1,
+    )
+
     gp = GrayParams(write_gray=bool(int(args.write_gray)))
 
     sp = SegParams(
@@ -470,23 +531,23 @@ def main():
         open_iters=int(args.seg_open_iters),
     )
 
-    # --- Generate synthetic binary from field
+    # Generate
     field = generate_field(shape, fp, rng)
     vol01, thr = threshold_to_bvtv(field, bvtv=float(args.bvtv), invert_phase=invert_phase)
     vol01 = apply_morphology(vol01, mp)
 
-    # Save binary outputs (field-binary)
+    # Save binaries
     save_png_u8((vol01[Z // 2] * 255).astype(np.uint8), outdir / "mid.png")
     save_tif_u8((vol01 * 255).astype(np.uint8), outdir / "mask.tif")
 
-    # --- Generate microCT-like grayscale
+    # Grayscale
     gray_u8: Optional[np.ndarray] = None
     if gp.write_gray:
         gray_u8 = microct_gray_fullfov(vol01, gp, rng)
         save_tif_u8(gray_u8, outdir / "gray.tif")
         save_png_u8(gray_u8[Z // 2], outdir / "gray_mid.png")
 
-    # --- Optional: CV-like segmentation from grayscale (alternative binary)
+    # Optional segmentation from grayscale
     seg01: Optional[np.ndarray] = None
     seg_info: Dict[str, Any] = {}
     if sp.segment_from_gray:
@@ -496,7 +557,7 @@ def main():
         save_tif_u8((seg01 * 255).astype(np.uint8), outdir / "seg_mask.tif")
         save_png_u8((seg01[Z // 2] * 255).astype(np.uint8), outdir / "seg_mid.png")
 
-    # Metrics (for both binaries)
+    # Metrics
     metrics: Dict[str, Any] = {
         "threshold_quantile_or_bvtv": float(thr),
         "invert_phase": invert_phase,
@@ -510,7 +571,6 @@ def main():
             **euler_conn(vol01),
         },
     }
-
     if seg01 is not None:
         metrics["binary_grayseg"] = {
             **seg_info,
@@ -523,17 +583,11 @@ def main():
 
     print(
         f"Saved to: {outdir}\n"
-        f"Field-binary BV/TV={metrics['binary_field']['BVTV']:.3f} | "
+        f"BV/TV={metrics['binary_field']['BVTV']:.3f} | "
         f"Tb.Th(p90)={metrics['binary_field']['tbth_um_p90']:.1f}um | "
-        f"Euler={metrics['binary_field']['euler']:.1f}"
+        f"Euler={metrics['binary_field']['euler']:.1f} | "
+        f"ConnProxy={metrics['binary_field']['conn_proxy']:.1f}"
     )
-    if seg01 is not None:
-        print(
-            f"Gray-seg BV/TV={metrics['binary_grayseg']['BVTV']:.3f} | "
-            f"Tb.Th(p90)={metrics['binary_grayseg']['tbth_um_p90']:.1f}um | "
-            f"Euler={metrics['binary_grayseg']['euler']:.1f} | "
-            f"Seg={metrics['binary_grayseg'].get('seg_method','?')}"
-        )
 
 
 if __name__ == "__main__":
