@@ -16,7 +16,13 @@ data/runs/
 results_*.csv
 # Data
 data/
+*.dcm
 *.tif
 *.tiff
-*.dcm
-*.json
+*.nii
+*.nii.gz
+*.jsonl
+
+# Python caches / venv
+__pycache__/
+.venv/
