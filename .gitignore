@@ -14,3 +14,9 @@ data/runs/
 **/*.tif
 **/*.tif.json
 results_*.csv
+# Data
+data/
+*.tif
+*.tiff
+*.dcm
+*.json
