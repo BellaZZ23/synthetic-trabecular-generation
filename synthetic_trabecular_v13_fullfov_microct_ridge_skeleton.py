@@ -9,6 +9,7 @@ Core idea:
   - Compute Hessian eigenvalues -> vesselness/ridge response
   - Threshold ridge response -> thin network
   - Optional skeletonize -> cleaner medial network
+  - Reconnect slightly with morphology
   - Thicken network using distance transform threshold (controls thickness)
   - Tune BV/TV by adjusting thickness threshold
 
@@ -18,6 +19,11 @@ Priors:
       BVTV
       tbth_um_p90
       euler
+
+Anti-block (important):
+  - Use 26-connectivity morphology (ndi.generate_binary_structure(3, 2))
+  - After thickening, apply a tiny blur+rethreshold rounding step to reduce voxel stair-steps:
+      bone01 = anti_block_round(bone01, sigma=round_sigma)
 
 Outputs:
   - mid.png, mask.tif
@@ -34,7 +40,7 @@ import argparse
 import json
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Tuple, Dict, Any, Optional
+from typing import Tuple, Dict, Any
 
 import numpy as np
 from PIL import Image
@@ -166,6 +172,21 @@ def vesselness_ridge(f: np.ndarray, sigma: float) -> np.ndarray:
 
 
 # -----------------------------
+# Anti-block rounding (reduces “square voxel” look)
+# -----------------------------
+def anti_block_round(bone01: np.ndarray, sigma: float) -> np.ndarray:
+    """
+    Slight blur + rethreshold to remove voxel stair-step artifacts.
+    sigma ~ 0.4–0.9 recommended. Set sigma<=0 to disable.
+    """
+    if float(sigma) <= 0:
+        return bone01.astype(np.uint8)
+    x = bone01.astype(np.float32)
+    x = ndi.gaussian_filter(x, sigma=float(sigma))
+    return (x >= 0.5).astype(np.uint8)
+
+
+# -----------------------------
 # Build bone network from ridges
 # -----------------------------
 def make_network(shape: Tuple[int, int, int], rp: RidgeParams, rng: np.random.Generator) -> Tuple[np.ndarray, Dict[str, Any]]:
@@ -187,8 +208,9 @@ def make_network(shape: Tuple[int, int, int], rp: RidgeParams, rng: np.random.Ge
         net = skeletonize_3d(net).astype(bool)
         used_skel = True
 
+    # IMPORTANT: 26-connectivity (less blocky)
     if int(rp.reconnect_close_iters) > 0:
-        st = ndi.generate_binary_structure(3, 1)
+        st = ndi.generate_binary_structure(3, 2)  # 26-connected
         net = ndi.binary_closing(net, structure=st, iterations=int(rp.reconnect_close_iters))
 
     return net.astype(np.uint8), {"ridge_q": q, "ridge_thr": thr, "used_skeleton": used_skel}
@@ -226,9 +248,9 @@ def thicken_network_to_bone(
 
     bone = (dist <= (best_thr + jitter))
 
-    # prune small components
+    # prune small components (uses 26-connectivity too)
     if int(rp.prune_small_components) > 0:
-        st = ndi.generate_binary_structure(3, 1)
+        st = ndi.generate_binary_structure(3, 2)  # 26-connected
         lab, n = ndi.label(bone, structure=st)
         if n > 0:
             counts = np.bincount(lab.ravel())
@@ -322,6 +344,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--reconnect-close-iters", type=int, default=3)
     p.add_argument("--use-skeleton", type=int, default=1)
 
+    # Anti-block rounding
+    p.add_argument("--round-sigma", type=float, default=0.7,
+                   help="Anti-block rounding sigma (vox). 0 disables.")
+
     # Gray
     p.add_argument("--write-gray", type=int, default=1)
     return p
@@ -359,7 +385,7 @@ def apply_priors(args: argparse.Namespace) -> Dict[str, Any]:
         args.thick_thr_vox = (tbth_um / float(args.voxel_um)) * 0.45
         print(f"  thick_thr_vox -> {args.thick_thr_vox:.2f} (from tbth_um_p90={tbth_um:.1f})")
 
-    # connectivity tuning
+    # connectivity tuning (slight)
     if "euler" in pri:
         eul = float(pri["euler"])
         if eul < -1000:
@@ -402,6 +428,9 @@ def main() -> None:
     # 2) thicken to match BVTV
     bone01, thick_info = thicken_network_to_bone(net01, rp, target_bvtv=float(args.bvtv), rng=rng)
 
+    # 3) anti-block rounding to reduce square voxel edges
+    bone01 = anti_block_round(bone01, sigma=float(args.round_sigma))
+
     # Save outputs
     Z = shape[0]
     save_tif_u8((bone01 * 255).astype(np.uint8), outdir / "mask.tif")
@@ -419,7 +448,7 @@ def main() -> None:
         "net_info": net_info,
         "thick_info": thick_info,
         "priors_used": priors,
-        "params": {"ridge": asdict(rp), "gray": asdict(gp)},
+        "params": {"ridge": asdict(rp), "gray": asdict(gp), "round_sigma": float(args.round_sigma)},
         "shape_zyx": list(shape),
         "skeletonize_3d_available": bool(skeletonize_3d is not None),
     }
@@ -428,7 +457,7 @@ def main() -> None:
     print(
         f"Saved to {outdir}\n"
         f"BVTV={met['BVTV']:.3f} | TbTh(p90)={met['TbTh_p90']:.1f}um | Euler={met['Euler']:.1f} | "
-        f"SkeletonAvailable={met['skeletonize_3d_available']}"
+        f"SkeletonAvailable={met['skeletonize_3d_available']} | round_sigma={float(args.round_sigma):.2f}"
     )
 
 
