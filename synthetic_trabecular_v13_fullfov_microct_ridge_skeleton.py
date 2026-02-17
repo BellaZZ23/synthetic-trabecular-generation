@@ -315,6 +315,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--invert-phase", type=int, default=0)  # kept for compatibility; ridge pipeline assumes bone=1
 
     p.add_argument("--voxel-um", type=float, default=39.0)
+    p.add_argument("--priors-json", type=str, default=None,
+               help="Path to aggregated priors JSON (VOI1+VOI4)")
+
 
     # Ridge knobs
     p.add_argument("--base-sigma", type=float, default=3.8)
@@ -335,6 +338,40 @@ def build_parser() -> argparse.ArgumentParser:
 def main():
     args = build_parser().parse_args()
     rng = np.random.default_rng(int(args.seed))
+
+    # -----------------------------
+# Load priors if provided
+# -----------------------------
+if args.priors_json is not None:
+    pri_path = Path(args.priors_json)
+    if pri_path.exists():
+        print(f"Loading priors from: {pri_path}")
+        with open(pri_path, "r") as f:
+            pri = json.load(f)
+
+        # --- BVTV ---
+        if "BVTV" in pri:
+            args.bvtv = float(pri["BVTV"])
+            print(f"  BVTV -> {args.bvtv:.3f}")
+
+        # --- Thickness (convert microns to voxels) ---
+        if "tbth_um_p90" in pri:
+            tbth_um = float(pri["tbth_um_p90"])
+            args.thick_thr_vox = (tbth_um / float(args.voxel_um)) * 0.45
+            print(f"  thick_thr_vox -> {args.thick_thr_vox:.2f}")
+
+        # --- Connectivity tuning ---
+        if "euler" in pri:
+            eul = float(pri["euler"])
+
+            # more negative Euler = more connected structure
+            if eul < -1000:
+                args.ridge_q = max(0.75, args.ridge_q - 0.03)
+                args.reconnect_close_iters += 2
+                print("  Connectivity increased (VOI4-like)")
+    else:
+        print(f"Priors file not found: {pri_path}")
+
 
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
