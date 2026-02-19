@@ -2,36 +2,12 @@
 r"""
 synthetic_trabecular_v13_fullfov_microct_ridge_skeleton.py
 
-Ridge/skeleton-based trabecular generator (better topology than GRF threshold blobs).
+v13 ridge/skeleton trabecular generator (bone-like topology).
 
-Core idea:
-  - Make smooth field
-  - Compute Hessian eigenvalues -> vesselness/ridge response
-  - Threshold ridge response -> thin network
-  - Optional skeletonize -> cleaner medial network
-  - Reconnect slightly with morphology
-  - Thicken network using distance transform threshold (controls thickness)
-  - Tune BV/TV by adjusting thickness threshold
-
-Priors:
-  - Optional: --priors-json (from VOI1+VOI4 aggregation)
-    Uses fields:
-      BVTV
-      tbth_um_p90
-      euler
-
-Anti-block (important):
-  - Use 26-connectivity morphology (ndi.generate_binary_structure(3, 2))
-  - After thickening, apply a tiny blur+rethreshold rounding step to reduce voxel stair-steps:
-      bone01 = anti_block_round(bone01, sigma=round_sigma)
-
-Outputs:
-  - mid.png, mask.tif
-  - gray_mid.png, gray.tif (optional)
-  - metrics.json
-
-Deps:
-  numpy, scipy, pillow, tifffile, scikit-image
+Changes in this version:
+  1) CLI BVTV overrides priors BVTV (priors only fill BVTV if you did not pass --bvtv)
+  2) Safer thickening binary-search bounds to prevent BVTV "runaway" fill
+  3) Warning if BVTV target is not reached (helps diagnose net/closing issues)
 """
 
 from __future__ import annotations
@@ -40,7 +16,7 @@ import argparse
 import json
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Tuple, Dict, Any
+from typing import Tuple, Dict, Any, Optional
 
 import numpy as np
 from PIL import Image
@@ -233,20 +209,33 @@ def thicken_network_to_bone(
 
     # binary search for threshold to match BV/TV
     target = float(np.clip(target_bvtv, 0.01, 0.95))
-    lo, hi = 0.2, max(0.8, float(rp.thick_thr_vox) * 3.5)
+
+    # SAFER bounds to prevent "fill almost everything" runaway
+    # lo is small; hi is capped (trabeculae won't need extreme dilation in voxels at this resolution)
+    lo, hi = 0.1, min(3.0, max(0.8, float(rp.thick_thr_vox) * 2.5))
 
     best_thr = float(rp.thick_thr_vox)
-    for _ in range(18):
+    best_err = float("inf")
+    best_bvtv = None
+
+    for _ in range(20):
         mid = 0.5 * (lo + hi)
         bone = (dist <= (mid + jitter))
         bvtv_val = float(bone.mean())
+
+        err = abs(bvtv_val - target)
+        if err < best_err:
+            best_err = err
+            best_thr = mid
+            best_bvtv = bvtv_val
+
         if bvtv_val < target:
             lo = mid
         else:
             hi = mid
-        best_thr = mid
 
     bone = (dist <= (best_thr + jitter))
+    final_bvtv = float(bone.mean())
 
     # prune small components (uses 26-connectivity too)
     if int(rp.prune_small_components) > 0:
@@ -258,8 +247,17 @@ def thicken_network_to_bone(
             keep[counts >= int(rp.prune_small_components)] = True
             keep[0] = False
             bone = keep[lab]
+            final_bvtv = float(bone.mean())
 
-    return bone.astype(np.uint8), {"thick_thr_fit": float(best_thr)}
+    info: Dict[str, Any] = {
+        "thick_thr_fit": float(best_thr),
+        "bvtv_target": float(target),
+        "bvtv_after_thicken": float(final_bvtv),
+        "bvtv_best_seen": float(best_bvtv) if best_bvtv is not None else None,
+        "thr_bounds": [float(lo), float(hi)],
+        "warn_target_miss": bool(abs(final_bvtv - target) > 0.10),
+    }
+    return bone.astype(np.uint8), info
 
 
 # -----------------------------
@@ -325,7 +323,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--z", type=int, default=160)
     p.add_argument("--seed", type=int, default=23)
 
-    p.add_argument("--bvtv", type=float, default=0.18)
+    # IMPORTANT: default None so priors can fill it, but CLI can override
+    p.add_argument("--bvtv", type=float, default=None)
     p.add_argument("--invert-phase", type=int, default=0, help="Kept for compatibility; ignored here.")
     p.add_argument("--voxel-um", type=float, default=39.0)
 
@@ -374,8 +373,8 @@ def apply_priors(args: argparse.Namespace) -> Dict[str, Any]:
 
     print(f"Loading priors from: {pri_path}")
 
-    # BVTV
-    if "BVTV" in pri:
+    # BVTV: only apply if user did NOT pass --bvtv
+    if "BVTV" in pri and args.bvtv is None:
         args.bvtv = float(pri["BVTV"])
         print(f"  BVTV -> {args.bvtv:.3f}")
 
@@ -391,7 +390,10 @@ def apply_priors(args: argparse.Namespace) -> Dict[str, Any]:
         if eul < -1000:
             args.ridge_q = max(0.75, float(args.ridge_q) - 0.03)
             args.reconnect_close_iters = int(args.reconnect_close_iters) + 2
-            print(f"  Connectivity increased: ridge_q -> {args.ridge_q:.3f}, reconnect_close_iters -> {args.reconnect_close_iters}")
+            print(
+                f"  Connectivity increased: ridge_q -> {args.ridge_q:.3f}, "
+                f"reconnect_close_iters -> {args.reconnect_close_iters}"
+            )
 
     return pri
 
@@ -401,6 +403,10 @@ def main() -> None:
     rng = np.random.default_rng(int(args.seed))
 
     priors = apply_priors(args)
+
+    # Fallback if neither CLI nor priors provided a BVTV
+    if args.bvtv is None:
+        args.bvtv = 0.18
 
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -453,6 +459,13 @@ def main() -> None:
         "skeletonize_3d_available": bool(skeletonize_3d is not None),
     }
     save_json(met, outdir / "metrics.json")
+
+    if thick_info.get("warn_target_miss", False):
+        print(
+            f"Warning: BVTV target {float(args.bvtv):.3f} not reached "
+            f"(after_thicken={float(thick_info.get('bvtv_after_thicken', -1)):.3f}). "
+            "Try adjusting ridge-q / reconnect-close-iters / base-sigma."
+        )
 
     print(
         f"Saved to {outdir}\n"
