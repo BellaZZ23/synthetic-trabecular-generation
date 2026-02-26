@@ -1,19 +1,30 @@
 #!/usr/bin/env python3
 r"""
-synthetic_trabecular_v13_fullfov_microct_ridge_skeleton.py
+synthetic_trabecular_v13_1_fullfov_microct_ridge_skeleton_robust.py
 
-v13 ridge/skeleton trabecular generator (bone-like topology).
+v13.1 ridge → proto-network → skeleton → radius-field thickening trabecular generator.
 
-Changes in this version:
-  1) CLI BVTV overrides priors BVTV (priors only fill BVTV if you did not pass --bvtv)
-  2) Safer thickening binary-search bounds to prevent BVTV "runaway" fill
-  3) Warning if BVTV target is not reached (helps diagnose net/closing issues)
+What’s new vs your v13:
+  A) Proto-network stage (hysteresis threshold + cleanup) BEFORE skeletonization
+  B) Robust skeletonization modes:
+       --skeleton-mode skimage (default, in-Python)
+       --skeleton-mode fiji   (optional; calls Fiji headless to run Skeletonize 3D / BoneJ)
+  C) Skeleton pruning (spur removal) via endpoint-to-junction geodesic distance
+  D) Radius-field thickening around skeleton (Tb.Th-driven), with BV/TV fit by scaling radius field
+  E) Debug outputs (proto_network.tif, skeleton.tif, etc.) via --debug-skeleton
+
+Outputs:
+  mask.tif, mid.png, (optional) gray.tif, gray_mid.png, metrics.json
+  plus debug intermediates when --debug-skeleton 1:
+    ridge_response.tif, proto_network.tif, skeleton_raw.tif, skeleton_pruned.tif
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import subprocess
+import tempfile
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Tuple, Dict, Any, Optional
@@ -25,7 +36,7 @@ from scipy import ndimage as ndi
 from scipy.ndimage import map_coordinates
 from skimage.measure import euler_number
 
-# Skeleton import: robust fallback
+# Skeleton import (Python fallback)
 try:
     from skimage.morphology import skeletonize_3d  # type: ignore
 except Exception:
@@ -43,28 +54,36 @@ class RidgeParams:
 
     hessian_sigma: float = 1.4       # ridge detection scale (controls thinness)
     ridge_strength: float = 1.0      # ridge response gain
-    ridge_quantile: float = 0.92     # higher -> thinner initial network
 
+    # Proto-network hysteresis thresholding on ridge response
+    proto_q_hi: float = 0.94         # strong ridges
+    proto_q_lo: float = 0.86         # weak ridges allowed if connected to strong
+    proto_close_iters: int = 1       # close small gaps BEFORE skeletonize
+    proto_open_iters: int = 0        # optional speckle removal
+    proto_min_component: int = 600   # remove tiny components BEFORE skeletonize (voxels)
+
+    # Skeleton
     use_skeleton: bool = True
+    skeleton_prune_lmin: int = 10    # prune endpoint branches shorter than this (vox)
+    reconnect_close_iters: int = 2   # light close AFTER skeletonize (optional)
 
-    # Thickness control (in voxels): final bone = distance_to_network <= thick_thr
-    thick_thr_vox: float = 1.2       # initial guess; binary search fits BVTV
-    thick_jitter: float = 0.25       # thickness variability (0..0.6)
-    jitter_sigma: float = 6.0        # smooth jitter field scale
+    # Radius-field thickness model
+    radius_mode: str = "branch"      # "branch" or "voxel"
+    radius_jitter: float = 0.25      # relative jitter of radius at skeleton points (0..0.6)
+    radius_smooth_sigma: float = 2.0 # smooth radius values along skeleton (approx, voxel blur on skel map)
+    radius_scale_hint: float = 1.0   # initial scaling of radius field (BV/TV fitting will adjust)
 
-    # Connectivity preservation
-    reconnect_close_iters: int = 3
-    prune_small_components: int = 0  # voxels; 0 disables
+    # Post-processing
+    prune_small_components: int = 0  # after final mask; 0 disables
 
 
 @dataclass
 class GrayParams:
     write_gray: bool = True
-    # surface-weighted sharp µCT look
     marrow_mean: float = 15.0
     bone_mean: float = 240.0
-    shell_sigma_vox: float = 0.9     # how quickly brightness falls off from boundary
-    pve_sigma: float = 0.5           # PSF blur (keep small for sharp µCT)
+    shell_sigma_vox: float = 0.9
+    pve_sigma: float = 0.5
     noise_sd: float = 3.0
     bg_tex_sd: float = 1.0
     unsharp: float = 0.6
@@ -148,13 +167,9 @@ def vesselness_ridge(f: np.ndarray, sigma: float) -> np.ndarray:
 
 
 # -----------------------------
-# Anti-block rounding (reduces “square voxel” look)
+# Anti-block rounding
 # -----------------------------
 def anti_block_round(bone01: np.ndarray, sigma: float) -> np.ndarray:
-    """
-    Slight blur + rethreshold to remove voxel stair-step artifacts.
-    sigma ~ 0.4–0.9 recommended. Set sigma<=0 to disable.
-    """
     if float(sigma) <= 0:
         return bone01.astype(np.uint8)
     x = bone01.astype(np.float32)
@@ -163,98 +178,382 @@ def anti_block_round(bone01: np.ndarray, sigma: float) -> np.ndarray:
 
 
 # -----------------------------
-# Build bone network from ridges
+# Proto-network hysteresis + cleanup
 # -----------------------------
-def make_network(shape: Tuple[int, int, int], rp: RidgeParams, rng: np.random.Generator) -> Tuple[np.ndarray, Dict[str, Any]]:
+def hysteresis_on_response(R: np.ndarray, q_lo: float, q_hi: float) -> Tuple[np.ndarray, Dict[str, float]]:
+    q_lo = float(np.clip(q_lo, 0.5, 0.995))
+    q_hi = float(np.clip(q_hi, q_lo + 1e-3, 0.999))
+    thr_hi = float(np.quantile(R, q_hi))
+    thr_lo = float(np.quantile(R, q_lo))
+
+    strong = (R >= thr_hi)
+    weak = (R >= thr_lo)
+
+    # Keep weak voxels only if connected to strong
+    st26 = ndi.generate_binary_structure(3, 2)
+    lab, n = ndi.label(weak, structure=st26)
+    if n == 0:
+        return strong.astype(np.uint8), {"thr_lo": thr_lo, "thr_hi": thr_hi}
+
+    strong_labels = np.unique(lab[strong])
+    keep = np.zeros(n + 1, dtype=bool)
+    keep[strong_labels] = True
+    keep[0] = False
+    out = keep[lab]
+
+    return out.astype(np.uint8), {"thr_lo": thr_lo, "thr_hi": thr_hi}
+
+def remove_small_components(vol: np.ndarray, min_size: int) -> np.ndarray:
+    if int(min_size) <= 0:
+        return vol.astype(np.uint8)
+    st26 = ndi.generate_binary_structure(3, 2)
+    lab, n = ndi.label(vol.astype(bool), structure=st26)
+    if n == 0:
+        return vol.astype(np.uint8)
+    counts = np.bincount(lab.ravel())
+    keep = counts >= int(min_size)
+    keep[0] = False
+    return keep[lab].astype(np.uint8)
+
+def morph_iters(vol: np.ndarray, op: str, iters: int) -> np.ndarray:
+    if int(iters) <= 0:
+        return vol.astype(np.uint8)
+    st26 = ndi.generate_binary_structure(3, 2)
+    x = vol.astype(bool)
+    if op == "close":
+        x = ndi.binary_closing(x, structure=st26, iterations=int(iters))
+    elif op == "open":
+        x = ndi.binary_opening(x, structure=st26, iterations=int(iters))
+    else:
+        raise ValueError(f"Unknown op: {op}")
+    return x.astype(np.uint8)
+
+
+# -----------------------------
+# Skeletonization (skimage or Fiji/BoneJ)
+# -----------------------------
+def skeletonize_with_skimage(proto01: np.ndarray) -> np.ndarray:
+    if skeletonize_3d is None:
+        raise RuntimeError("skimage.skeletonize_3d unavailable; install scikit-image or use --skeleton-mode fiji.")
+    return skeletonize_3d(proto01.astype(bool)).astype(np.uint8)
+
+def skeletonize_with_fiji(
+    proto01: np.ndarray,
+    fiji_exe: str,
+    outdir: Path,
+    command_name: str = "Skeletonize (2D/3D)",
+) -> np.ndarray:
+    """
+    Exports proto_network.tif and calls Fiji headless to skeletonize it.
+    This uses a minimal ImageJ macro calling the given command name.
+    Notes:
+      - Works with built-in 'Skeletonize (2D/3D)' on many Fiji installs.
+      - If you want BoneJ explicitly, you can set command_name accordingly.
+    """
+    outdir.mkdir(parents=True, exist_ok=True)
+    in_tif = outdir / "proto_network_for_fiji.tif"
+    out_tif = outdir / "skeleton_from_fiji.tif"
+    save_tif_u8((proto01 * 255).astype(np.uint8), in_tif)
+
+    macro = f"""
+    open("{in_tif.as_posix()}");
+    run("{command_name}");
+    saveAs("Tiff", "{out_tif.as_posix()}");
+    close();
+    """
+
+    with tempfile.NamedTemporaryFile("w", suffix=".ijm", delete=False) as mf:
+        mf.write(macro)
+        macro_path = mf.name
+
+    # Run Fiji
+    try:
+        subprocess.run(
+            [fiji_exe, "--headless", "-macro", macro_path],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(
+            "Fiji skeletonization failed.\n"
+            f"STDOUT:\n{e.stdout}\n\nSTDERR:\n{e.stderr}\n"
+            f"Macro used: {macro_path}\n"
+            f"Input: {in_tif}\n"
+        ) from e
+
+    sk = tiff.imread(out_tif)
+    sk = (sk > 0).astype(np.uint8)
+    return sk
+
+
+# -----------------------------
+# Skeleton pruning (spur removal)
+# -----------------------------
+def neighbor_degree_26(skel: np.ndarray) -> np.ndarray:
+    st = ndi.generate_binary_structure(3, 2)
+    n = ndi.convolve(skel.astype(np.uint8), st.astype(np.uint8), mode="constant", cval=0)
+    # subtract self
+    return (n - skel.astype(np.uint8)).astype(np.int16)
+
+def prune_short_end_branches(skel01: np.ndarray, lmin: int) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """
+    Prunes endpoint branches shorter than lmin voxels (geodesic distance to nearest junction).
+    Implementation:
+      - define junctions: degree>=3
+      - compute geodesic distance from all junctions along skeleton (BFS)
+      - remove endpoints where dist < lmin, iteratively until stable
+    """
+    lmin = int(max(1, lmin))
+    st = ndi.generate_binary_structure(3, 2)
+    sk = skel01.astype(bool)
+
+    removed_total = 0
+    it = 0
+    while True:
+        it += 1
+        deg = neighbor_degree_26(sk.astype(np.uint8))
+        endpoints = sk & (deg == 1)
+        junctions = sk & (deg >= 3)
+
+        if not endpoints.any():
+            break
+
+        # If no junctions, nothing to prune safely (would delete entire line)
+        if not junctions.any():
+            break
+
+        # Geodesic distance from junctions on skeleton: BFS using iterative dilation
+        # dist init: 0 at junctions, inf elsewhere on skeleton
+        dist = np.full(sk.shape, np.inf, dtype=np.float32)
+        dist[junctions] = 0.0
+
+        frontier = junctions.copy()
+        d = 0
+        # BFS up to lmin (no need to compute beyond)
+        while d < lmin and frontier.any():
+            d += 1
+            nbr = ndi.binary_dilation(frontier, structure=st) & sk & (dist == np.inf)
+            dist[nbr] = float(d)
+            frontier = nbr
+
+        # Mark endpoints within lmin of a junction
+        to_remove = endpoints & (dist < float(lmin))
+        n_remove = int(to_remove.sum())
+        if n_remove == 0:
+            break
+
+        sk[to_remove] = False
+        removed_total += n_remove
+
+        # stop if too many iterations
+        if it > 50:
+            break
+
+    info = {"prune_lmin": lmin, "prune_iters": it, "vox_removed": removed_total}
+    return sk.astype(np.uint8), info
+
+
+# -----------------------------
+# Build proto-network + skeleton
+# -----------------------------
+def make_proto_and_skeleton(
+    shape: Tuple[int, int, int],
+    rp: RidgeParams,
+    rng: np.random.Generator,
+    skeleton_mode: str,
+    fiji_exe: Optional[str],
+    debug_dir: Optional[Path],
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    # 1) random smooth field + warp
     f = rng.normal(0, 1, size=shape).astype(np.float32)
     f = ndi.gaussian_filter(f, sigma=float(rp.base_sigma))
     f = smooth_warp(f, rng, warp_sigma=float(rp.warp_sigma), warp_amp=float(rp.warp_amp))
     f = normalize(f)
 
+    # 2) ridge response
     R = vesselness_ridge(f, sigma=float(rp.hessian_sigma))
     R = np.clip(R * float(rp.ridge_strength), 0.0, 1.0)
 
-    q = float(np.clip(rp.ridge_quantile, 0.5, 0.995))
-    thr = float(np.quantile(R, q))
-    net = (R >= thr)
+    # 3) proto-network via hysteresis on ridge response
+    proto01, hyst_info = hysteresis_on_response(R, q_lo=float(rp.proto_q_lo), q_hi=float(rp.proto_q_hi))
 
-    # skeletonize (optional) if available and not tiny Z
+    # 4) cleanup BEFORE skeletonize
+    proto01 = morph_iters(proto01, "close", int(rp.proto_close_iters))
+    proto01 = morph_iters(proto01, "open", int(rp.proto_open_iters))
+    proto01 = remove_small_components(proto01, int(rp.proto_min_component))
+
+    # 5) skeletonize (optional)
     used_skel = False
-    if bool(rp.use_skeleton) and shape[0] >= 2 and skeletonize_3d is not None:
-        net = skeletonize_3d(net).astype(bool)
-        used_skel = True
+    skel_raw = proto01.copy().astype(np.uint8)
+    if bool(rp.use_skeleton):
+        if skeleton_mode == "skimage":
+            skel_raw = skeletonize_with_skimage(proto01)
+            used_skel = True
+        elif skeleton_mode == "fiji":
+            if not fiji_exe:
+                raise RuntimeError("--skeleton-mode fiji requires --fiji-exe /path/to/Fiji.app/ImageJ-linux64 (or similar).")
+            outdir = debug_dir if debug_dir is not None else Path(tempfile.mkdtemp())
+            skel_raw = skeletonize_with_fiji(proto01, fiji_exe=fiji_exe, outdir=outdir)
+            used_skel = True
+        else:
+            raise ValueError(f"Unknown skeleton mode: {skeleton_mode}")
 
-    # IMPORTANT: 26-connectivity (less blocky)
+    # 6) prune spurs
+    skel_pruned, prune_info = prune_short_end_branches(skel_raw, lmin=int(rp.skeleton_prune_lmin))
+
+    # 7) optional close after pruning for continuity
     if int(rp.reconnect_close_iters) > 0:
-        st = ndi.generate_binary_structure(3, 2)  # 26-connected
-        net = ndi.binary_closing(net, structure=st, iterations=int(rp.reconnect_close_iters))
+        skel_pruned = morph_iters(skel_pruned, "close", int(rp.reconnect_close_iters))
 
-    return net.astype(np.uint8), {"ridge_q": q, "ridge_thr": thr, "used_skeleton": used_skel}
+    # Debug saves
+    if debug_dir is not None:
+        save_tif_u8((R * 255).astype(np.uint8), debug_dir / "ridge_response.tif")
+        save_tif_u8((proto01 * 255).astype(np.uint8), debug_dir / "proto_network.tif")
+        save_tif_u8((skel_raw * 255).astype(np.uint8), debug_dir / "skeleton_raw.tif")
+        save_tif_u8((skel_pruned * 255).astype(np.uint8), debug_dir / "skeleton_pruned.tif")
+
+    info: Dict[str, Any] = {
+        "hysteresis": hyst_info,
+        "used_skeleton": used_skel,
+        "skeleton_mode": skeleton_mode,
+        "prune_info": prune_info,
+    }
+    return skel_pruned.astype(np.uint8), info
 
 
-def thicken_network_to_bone(
-    net01: np.ndarray, rp: RidgeParams, target_bvtv: float, rng: np.random.Generator
-) -> Tuple[np.ndarray, Dict[str, Any]]:
-    net = net01.astype(bool)
-    dist = ndi.distance_transform_edt(~net)  # distance to nearest net voxel
+# -----------------------------
+# Radius-field thickening + BV/TV fit (topology-preserving)
+# -----------------------------
+def radius_samples_for_skeleton(
+    skel01: np.ndarray,
+    rng: np.random.Generator,
+    base_radius_vox: float,
+    mode: str,
+    jitter: float,
+    smooth_sigma: float,
+) -> np.ndarray:
+    """
+    Produces a sparse radius map defined on skeleton voxels, then optionally smooths it.
+    - mode="branch": approximate by connected components on skeleton; constant radius per component
+    - mode="voxel": random radius per voxel on skeleton (then smoothed)
+    """
+    sk = skel01.astype(bool)
+    rad = np.zeros(skel01.shape, dtype=np.float32)
+    if not sk.any():
+        return rad
 
-    # thickness jitter
-    if float(rp.thick_jitter) > 0:
-        j = rng.normal(0, 1, size=dist.shape).astype(np.float32)
-        j = ndi.gaussian_filter(j, sigma=float(rp.jitter_sigma))
-        j = j / (float(j.std()) + 1e-6)
-        jitter = float(rp.thick_jitter) * j
+    base = float(max(0.3, base_radius_vox))
+    jitter = float(np.clip(jitter, 0.0, 0.9))
+
+    st26 = ndi.generate_binary_structure(3, 2)
+
+    if mode == "branch":
+        lab, n = ndi.label(sk, structure=st26)
+        if n == 0:
+            return rad
+        # Sample one radius per component (cheap & stable)
+        # Use lognormal-ish variability (positive, mild skew)
+        # (mean around base, CV controlled by jitter)
+        for i in range(1, n + 1):
+            r = base * float(np.exp(rng.normal(0.0, 0.35 * jitter)))
+            rad[lab == i] = r
     else:
-        jitter = 0.0
+        # per-voxel sample
+        noise = rng.normal(0.0, 1.0, size=skel01.shape).astype(np.float32)
+        rad[sk] = base * np.clip(1.0 + jitter * noise[sk], 0.25, 3.0)
 
-    # binary search for threshold to match BV/TV
+    # Smooth radius values on the sparse skeleton support (approximate by blur then renormalize)
+    if float(smooth_sigma) > 0:
+        w = sk.astype(np.float32)
+        num = ndi.gaussian_filter(rad, sigma=float(smooth_sigma))
+        den = ndi.gaussian_filter(w, sigma=float(smooth_sigma)) + 1e-6
+        rad = num / den
+        rad[~sk] = 0.0
+
+    return rad
+
+def thicken_from_skeleton_radius_field(
+    skel01: np.ndarray,
+    rng: np.random.Generator,
+    target_bvtv: float,
+    base_radius_vox: float,
+    radius_mode: str,
+    radius_jitter: float,
+    radius_smooth_sigma: float,
+    radius_scale_hint: float,
+    debug_dir: Optional[Path],
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """
+    Thickens by: bone = dist_to_skeleton <= (scale * radius_nearest_skel)
+    where radius_nearest_skel is assigned by nearest-skeleton mapping.
+    BV/TV is matched by binary search on 'scale' (topology preserved).
+    """
+    sk = skel01.astype(bool)
+    if not sk.any():
+        bone = np.zeros_like(skel01, dtype=np.uint8)
+        return bone, {"error": "Empty skeleton"}
+
+    # Sparse radii on skeleton voxels
+    rad_skel = radius_samples_for_skeleton(
+        skel01, rng=rng, base_radius_vox=base_radius_vox,
+        mode=radius_mode, jitter=radius_jitter, smooth_sigma=radius_smooth_sigma
+    )
+
+    # Nearest skeleton indices + distance to skeleton
+    dist, inds = ndi.distance_transform_edt(~sk, return_indices=True)
+    iz, iy, ix = inds
+    rad_field = rad_skel[iz, iy, ix].astype(np.float32)
+
+    # Safety: if some areas map to zero (shouldn't), floor them
+    floor_r = float(max(0.25, 0.25 * base_radius_vox))
+    rad_field = np.maximum(rad_field, floor_r)
+
+    # BV/TV fit by scaling radius field
     target = float(np.clip(target_bvtv, 0.01, 0.95))
 
-    # SAFER bounds to prevent "fill almost everything" runaway
-    # lo is small; hi is capped (trabeculae won't need extreme dilation in voxels at this resolution)
-    lo, hi = 0.1, min(3.0, max(0.8, float(rp.thick_thr_vox) * 2.5))
+    # bounds for scale: avoid runaway fill
+    lo = 0.25
+    hi = 3.0
+    x0 = float(np.clip(radius_scale_hint, lo, hi))
 
-    best_thr = float(rp.thick_thr_vox)
+    best_scale = x0
     best_err = float("inf")
     best_bvtv = None
 
-    for _ in range(20):
+    for _ in range(24):
         mid = 0.5 * (lo + hi)
-        bone = (dist <= (mid + jitter))
-        bvtv_val = float(bone.mean())
-
-        err = abs(bvtv_val - target)
+        bone = (dist <= (mid * rad_field))
+        b = float(bone.mean())
+        err = abs(b - target)
         if err < best_err:
             best_err = err
-            best_thr = mid
-            best_bvtv = bvtv_val
-
-        if bvtv_val < target:
+            best_scale = mid
+            best_bvtv = b
+        if b < target:
             lo = mid
         else:
             hi = mid
 
-    bone = (dist <= (best_thr + jitter))
+    bone = (dist <= (best_scale * rad_field))
     final_bvtv = float(bone.mean())
 
-    # prune small components (uses 26-connectivity too)
-    if int(rp.prune_small_components) > 0:
-        st = ndi.generate_binary_structure(3, 2)  # 26-connected
-        lab, n = ndi.label(bone, structure=st)
-        if n > 0:
-            counts = np.bincount(lab.ravel())
-            keep = np.zeros_like(counts, dtype=bool)
-            keep[counts >= int(rp.prune_small_components)] = True
-            keep[0] = False
-            bone = keep[lab]
-            final_bvtv = float(bone.mean())
+    if debug_dir is not None:
+        # Save a mid-slice view of radius field for sanity (scaled to 0..255)
+        rf = rad_field / (rad_field.max() + 1e-6)
+        save_tif_u8((rf * 255).astype(np.uint8), debug_dir / "radius_field_u8.tif")
 
-    info: Dict[str, Any] = {
-        "thick_thr_fit": float(best_thr),
+    info = {
+        "base_radius_vox": float(base_radius_vox),
+        "radius_mode": str(radius_mode),
+        "radius_jitter": float(radius_jitter),
+        "radius_smooth_sigma": float(radius_smooth_sigma),
+        "scale_fit": float(best_scale),
         "bvtv_target": float(target),
         "bvtv_after_thicken": float(final_bvtv),
         "bvtv_best_seen": float(best_bvtv) if best_bvtv is not None else None,
-        "thr_bounds": [float(lo), float(hi)],
+        "scale_bounds_end": [float(lo), float(hi)],
         "warn_target_miss": bool(abs(final_bvtv - target) > 0.10),
     }
     return bone.astype(np.uint8), info
@@ -296,7 +595,6 @@ def thickness_pcts_um(vol01: np.ndarray, voxel_um: float) -> Dict[str, float]:
     bone = vol01.astype(bool)
     if bone.sum() == 0 or (~bone).sum() == 0:
         return {"TbTh_p50": 0.0, "TbTh_p90": 0.0, "TbSp_p50": 0.0, "TbSp_p90": 0.0}
-
     dt_b = ndi.distance_transform_edt(bone) * float(voxel_um)
     dt_m = ndi.distance_transform_edt(~bone) * float(voxel_um)
     tbth = dt_b[bone]
@@ -312,50 +610,79 @@ def euler_conn(vol01: np.ndarray) -> Dict[str, float]:
     e = float(euler_number(vol01.astype(bool), connectivity=3))
     return {"Euler": e, "ConnProxy": float(1.0 - e)}
 
+def skeleton_graph_stats(skel01: np.ndarray) -> Dict[str, Any]:
+    sk = skel01.astype(bool)
+    if not sk.any():
+        return {"skel_voxels": 0, "junctions": 0, "endpoints": 0, "endpoint_junction_ratio": None}
+    deg = neighbor_degree_26(sk.astype(np.uint8))
+    endpoints = int((sk & (deg == 1)).sum())
+    junctions = int((sk & (deg >= 3)).sum())
+    ratio = (float(endpoints) / float(max(1, junctions))) if junctions > 0 else None
+    return {
+        "skel_voxels": int(sk.sum()),
+        "junctions": junctions,
+        "endpoints": endpoints,
+        "endpoint_junction_ratio": ratio,
+    }
+
 
 # -----------------------------
 # CLI
 # -----------------------------
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="v13 ridge/skeleton trabecular generator (bone-like topology).")
-    p.add_argument("--outdir", type=str, default="data/v13_ridge")
+    p = argparse.ArgumentParser(description="v13.1 ridge→skeleton→radius-field trabecular generator.")
+    p.add_argument("--outdir", type=str, default="data/synth/v13_1")
     p.add_argument("--xy", type=int, default=512)
     p.add_argument("--z", type=int, default=160)
     p.add_argument("--seed", type=int, default=23)
 
-    # IMPORTANT: default None so priors can fill it, but CLI can override
     p.add_argument("--bvtv", type=float, default=None)
-    p.add_argument("--invert-phase", type=int, default=0, help="Kept for compatibility; ignored here.")
     p.add_argument("--voxel-um", type=float, default=39.0)
+    p.add_argument("--priors-json", type=str, default=None, help="Path to aggregated priors JSON")
 
-    p.add_argument("--priors-json", type=str, default=None,
-                   help="Path to aggregated priors JSON (VOI1+VOI4)")
-
-    # Ridge knobs
+    # Ridge/warp
     p.add_argument("--base-sigma", type=float, default=3.8)
     p.add_argument("--warp-sigma", type=float, default=14.0)
     p.add_argument("--warp-amp", type=float, default=4.8)
     p.add_argument("--hessian-sigma", type=float, default=1.4)
-    p.add_argument("--ridge-q", type=float, default=0.92)
     p.add_argument("--ridge-strength", type=float, default=1.0)
-    p.add_argument("--thick-jitter", type=float, default=0.25)
-    p.add_argument("--thick-thr-vox", type=float, default=1.2)
-    p.add_argument("--reconnect-close-iters", type=int, default=3)
+
+    # Proto hysteresis
+    p.add_argument("--proto-q-hi", type=float, default=0.94)
+    p.add_argument("--proto-q-lo", type=float, default=0.86)
+    p.add_argument("--proto-close-iters", type=int, default=1)
+    p.add_argument("--proto-open-iters", type=int, default=0)
+    p.add_argument("--proto-min-component", type=int, default=600)
+
+    # Skeleton
     p.add_argument("--use-skeleton", type=int, default=1)
+    p.add_argument("--skeleton-mode", type=str, default="skimage", choices=["skimage", "fiji"])
+    p.add_argument("--fiji-exe", type=str, default=None, help="Path to Fiji executable for --skeleton-mode fiji")
+    p.add_argument("--fiji-command", type=str, default="Skeletonize (2D/3D)", help="ImageJ command name to run")
+    p.add_argument("--skeleton-prune-lmin", type=int, default=10)
+    p.add_argument("--reconnect-close-iters", type=int, default=2)
+
+    # Radius-field thickening
+    p.add_argument("--radius-mode", type=str, default="branch", choices=["branch", "voxel"])
+    p.add_argument("--radius-jitter", type=float, default=0.25)
+    p.add_argument("--radius-smooth-sigma", type=float, default=2.0)
+    p.add_argument("--radius-scale-hint", type=float, default=1.0)
 
     # Anti-block rounding
-    p.add_argument("--round-sigma", type=float, default=0.7,
-                   help="Anti-block rounding sigma (vox). 0 disables.")
+    p.add_argument("--round-sigma", type=float, default=0.7, help="Anti-block rounding sigma (vox). 0 disables.")
 
     # Gray
     p.add_argument("--write-gray", type=int, default=1)
+
+    # Debug
+    p.add_argument("--debug-skeleton", type=int, default=0, help="Save debug intermediates (tifs).")
+
     return p
 
 
 def apply_priors(args: argparse.Namespace) -> Dict[str, Any]:
     """
-    Load priors and apply to args. Returns the priors dict (or {}).
-    Expected priors keys from pipeline_targets_aggregate.py:
+    Expected priors keys (based on your description):
       BVTV
       tbth_um_p90
       euler
@@ -378,24 +705,41 @@ def apply_priors(args: argparse.Namespace) -> Dict[str, Any]:
         args.bvtv = float(pri["BVTV"])
         print(f"  BVTV -> {args.bvtv:.3f}")
 
-    # thickness: convert um -> vox
+    # Thickness prior -> base radius hint in voxels
+    # We interpret tbth_um_p90 as approx thickness; radius ~ thickness/2.
     if "tbth_um_p90" in pri:
         tbth_um = float(pri["tbth_um_p90"])
-        args.thick_thr_vox = (tbth_um / float(args.voxel_um)) * 0.45
-        print(f"  thick_thr_vox -> {args.thick_thr_vox:.2f} (from tbth_um_p90={tbth_um:.1f})")
+        base_radius_vox = (tbth_um / float(args.voxel_um)) * 0.5
+        # We store this on args for later use
+        setattr(args, "_base_radius_vox_from_priors", base_radius_vox)
+        print(f"  base_radius_vox (from tbth_um_p90) -> {base_radius_vox:.2f} vox (tbth_um_p90={tbth_um:.1f})")
 
-    # connectivity tuning (slight)
+    # Connectivity tuning (light): if very negative Euler, lower proto_q_hi a bit and close a bit more
     if "euler" in pri:
         eul = float(pri["euler"])
         if eul < -1000:
-            args.ridge_q = max(0.75, float(args.ridge_q) - 0.03)
-            args.reconnect_close_iters = int(args.reconnect_close_iters) + 2
+            args.proto_q_hi = max(0.88, float(args.proto_q_hi) - 0.02)
+            args.proto_close_iters = int(args.proto_close_iters) + 1
+            args.reconnect_close_iters = int(args.reconnect_close_iters) + 1
             print(
-                f"  Connectivity increased: ridge_q -> {args.ridge_q:.3f}, "
-                f"reconnect_close_iters -> {args.reconnect_close_iters}"
+                f"  Connectivity increased: proto_q_hi -> {args.proto_q_hi:.3f}, "
+                f"proto_close_iters -> {args.proto_close_iters}, reconnect_close_iters -> {args.reconnect_close_iters}"
             )
 
     return pri
+
+
+def prune_small_components_final(bone: np.ndarray, min_size: int) -> np.ndarray:
+    if int(min_size) <= 0:
+        return bone.astype(np.uint8)
+    st26 = ndi.generate_binary_structure(3, 2)
+    lab, n = ndi.label(bone.astype(bool), structure=st26)
+    if n == 0:
+        return bone.astype(np.uint8)
+    counts = np.bincount(lab.ravel())
+    keep = counts >= int(min_size)
+    keep[0] = False
+    return keep[lab].astype(np.uint8)
 
 
 def main() -> None:
@@ -404,12 +748,16 @@ def main() -> None:
 
     priors = apply_priors(args)
 
-    # Fallback if neither CLI nor priors provided a BVTV
+    # BVTV default fallback
     if args.bvtv is None:
         args.bvtv = 0.18
 
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
+
+    debug_dir = outdir / "debug" if bool(int(args.debug_skeleton)) else None
+    if debug_dir is not None:
+        debug_dir.mkdir(parents=True, exist_ok=True)
 
     shape = (int(args.z), int(args.xy), int(args.xy))
 
@@ -419,23 +767,56 @@ def main() -> None:
         warp_amp=float(args.warp_amp),
         hessian_sigma=float(args.hessian_sigma),
         ridge_strength=float(args.ridge_strength),
-        ridge_quantile=float(args.ridge_q),
+
+        proto_q_hi=float(args.proto_q_hi),
+        proto_q_lo=float(args.proto_q_lo),
+        proto_close_iters=int(args.proto_close_iters),
+        proto_open_iters=int(args.proto_open_iters),
+        proto_min_component=int(args.proto_min_component),
+
         use_skeleton=bool(int(args.use_skeleton)),
-        thick_thr_vox=float(args.thick_thr_vox),
-        thick_jitter=float(args.thick_jitter),
+        skeleton_prune_lmin=int(args.skeleton_prune_lmin),
         reconnect_close_iters=int(args.reconnect_close_iters),
+
+        radius_mode=str(args.radius_mode),
+        radius_jitter=float(args.radius_jitter),
+        radius_smooth_sigma=float(args.radius_smooth_sigma),
+        radius_scale_hint=float(args.radius_scale_hint),
     )
 
     gp = GrayParams(write_gray=bool(int(args.write_gray)))
 
-    # 1) thin network
-    net01, net_info = make_network(shape, rp, rng)
+    # Base radius from priors if present; else infer a conservative default
+    base_radius_vox = float(getattr(args, "_base_radius_vox_from_priors", 1.2))
 
-    # 2) thicken to match BVTV
-    bone01, thick_info = thicken_network_to_bone(net01, rp, target_bvtv=float(args.bvtv), rng=rng)
+    # 1) proto-network + skeleton
+    skel01, skel_info = make_proto_and_skeleton(
+        shape=shape,
+        rp=rp,
+        rng=rng,
+        skeleton_mode=str(args.skeleton_mode),
+        fiji_exe=args.fiji_exe,
+        debug_dir=debug_dir,
+    )
 
-    # 3) anti-block rounding to reduce square voxel edges
+    # 2) radius-field thickening + BV/TV fit
+    bone01, thick_info = thicken_from_skeleton_radius_field(
+        skel01=skel01,
+        rng=rng,
+        target_bvtv=float(args.bvtv),
+        base_radius_vox=base_radius_vox,
+        radius_mode=str(args.radius_mode),
+        radius_jitter=float(args.radius_jitter),
+        radius_smooth_sigma=float(args.radius_smooth_sigma),
+        radius_scale_hint=float(args.radius_scale_hint),
+        debug_dir=debug_dir,
+    )
+
+    # 3) anti-block rounding
     bone01 = anti_block_round(bone01, sigma=float(args.round_sigma))
+
+    # 4) optional final component pruning
+    bone01 = prune_small_components_final(bone01, min_size=int(rp.prune_small_components))
 
     # Save outputs
     Z = shape[0]
@@ -447,11 +828,13 @@ def main() -> None:
         save_tif_u8(gray, outdir / "gray.tif")
         save_png_u8(gray[Z // 2], outdir / "gray_mid.png")
 
+    # Metrics
     met: Dict[str, Any] = {
         "BVTV": bvtv(bone01),
         **thickness_pcts_um(bone01, voxel_um=float(args.voxel_um)),
         **euler_conn(bone01),
-        "net_info": net_info,
+        "skeleton_stats": skeleton_graph_stats(skel01),
+        "skeleton_info": skel_info,
         "thick_info": thick_info,
         "priors_used": priors,
         "params": {"ridge": asdict(rp), "gray": asdict(gp), "round_sigma": float(args.round_sigma)},
@@ -464,13 +847,14 @@ def main() -> None:
         print(
             f"Warning: BVTV target {float(args.bvtv):.3f} not reached "
             f"(after_thicken={float(thick_info.get('bvtv_after_thicken', -1)):.3f}). "
-            "Try adjusting ridge-q / reconnect-close-iters / base-sigma."
+            "Try: lower proto-q-hi / increase proto-close-iters / increase reconnect-close-iters / increase radius-scale-hint."
         )
 
     print(
         f"Saved to {outdir}\n"
         f"BVTV={met['BVTV']:.3f} | TbTh(p90)={met['TbTh_p90']:.1f}um | Euler={met['Euler']:.1f} | "
-        f"SkeletonAvailable={met['skeletonize_3d_available']} | round_sigma={float(args.round_sigma):.2f}"
+        f"Skel(end/junc)={met['skeleton_stats'].get('endpoint_junction_ratio')} | "
+        f"SkeletonMode={skel_info.get('skeleton_mode')} | round_sigma={float(args.round_sigma):.2f}"
     )
 
 
