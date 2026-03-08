@@ -71,8 +71,11 @@ from skimage.measure import euler_number
 
 try:
     from skimage.morphology import skeletonize_3d  # type: ignore
-except Exception:
-    skeletonize_3d = None
+except ImportError:
+    try:
+        from skimage.morphology import skeletonize as skeletonize_3d  # type: ignore
+    except ImportError:
+        skeletonize_3d = None
 
 
 # -----------------------------------------------

@@ -1,7 +1,7 @@
-﻿numpy
-pillow
+﻿numpy<2
+scikit-image==0.22.0
+scipy
 tifffile
-pandas
-scikit-image
-scipy
-scipy
+imageio
+pydicom
+pillow
