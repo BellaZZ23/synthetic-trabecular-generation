@@ -4,67 +4,50 @@ synthetic_trabecular_v15_morphometric_control.py
 
 v15: Morphometric-controlled synthetic trabecular bone generator.
 
-Calibrated to published human femoral head trabecular bone morphometrics
-from Tamimi et al., Bone 140 (2020) 115558:
+PRIMARY INPUT: targets.json produced by pipeline_voi1_multiframe_dcm_to_targets.py
+    Contains: BVTV, TbTh_um_p50/p90, TbSp_um_p50/p90, Euler, voxel_um_zyx, shape_zyx
+    These are measured from the real DICOM VOI and drive the synthetic generation.
 
-  Hip Fracture (osteoporotic, n=31):
-    BV/TV = 20.4% +/- 6.6,  Tb.Th = 180 um +/- 21
-    Tb.N  = 1.5/mm +/- 0.79, Tb.Sp = 580 um +/- 280
+VALIDATION BOUNDS: Tamimi et al., Bone 140 (2020) 115558
+    Published femoral head morphometrics used only to flag out-of-range results.
+    NOT used as generation targets.
 
-  Hip Osteoarthritis (n=42):
-    BV/TV = 28.6% +/- 10.5, Tb.Th = 130 um +/- 37
-    Tb.N  = 2.58/mm +/- 1.57, Tb.Sp = 420 um +/- 230
+Usage
+-----
+  # Generate from a single VOI targets file:
+  python synthetic_trabecular_v15_morphometric_control.py \
+      --targets-json data/derived/VOI1/specimen1_Scan1_targets.json \
+      --outdir output/specimen1
 
-Key relationship enforced:
-    Tb.N ~ BV/TV / Tb.Th  (trabeculae per mm)
+  # Generate from a directory of VOI targets (batch mode):
+  python synthetic_trabecular_v15_morphometric_control.py \
+      --targets-dir data/derived/VOI1 \
+      --outdir output/batch
 
-Changes vs v14
----------------
-  v15-FIX A  Distance transform x2 correction.
-             measure_all_morphometrics() now reports FULL thickness (diameter),
-             not inscribed radius.  DT values multiplied by 2.0.
-             Tb.N derivation uses corrected Tb.Th_mean.
+  # Override specific targets or voxel size:
+  python synthetic_trabecular_v15_morphometric_control.py \
+      --targets-json data/derived/VOI1/specimen1_Scan1_targets.json \
+      --bvtv 0.22 \
+      --outdir output/override
 
-  v15-FIX B  Adaptive solid fill sigma.
-             solid_fill_sigma = 0.35 * base_radius_vox, clamped [0.3, 1.5].
-             Ensures the Gaussian fill saturates within the strut so the
-             entire interior is bright (~bone_mean), not just the shell.
+  # Fall back to Tamimi literature profile (no VOI data):
+  python synthetic_trabecular_v15_morphometric_control.py \
+      --profile tamimi-hf \
+      --outdir output/literature
 
-  v15-FIX C  VOI prior pipeline correction.
-             --prior-uses-radius 1 doubles Tb.Th and Tb.Sp values loaded
-             from a priors JSON that was measured with the v14 bug.
-
-  v15-FIX D  ASCII validation labels.
-             All metric labels use 'um' not Unicode mu to prevent
-             encoding mismatches with downstream tools.
-
-  v15-FIX E  Morphometric consistency.
-             Derives implied Tb.N = BV/TV / Tb.Th.  Uses the sparser of
-             user Tb.N and implied Tb.N (larger base_sigma) to prevent
-             over-dense skeletons that force thin struts to meet BV/TV.
-             Scale floor lo=0.7 in BV/TV binary search prevents struts
-             shrinking below 70% of the Tb.Th-derived radius.
-
-  v15-FIX F  Re-skeletonize after reconnection closing.
-             Reconnection closing inflates the skeleton to multi-voxel
-             width.  Re-skeletonization restores a 1-voxel medial axis
-             so the radius field (from --tbth-um) controls strut thickness.
-
-  v15-FIX G  Connectivity-aware pruning.
-             reconnect_close_iters reduced to 2 (from 3) and
-             skeleton_prune_lmin reduced to 6 (from 8).
-
-All v14 fixes (1-6) are preserved.
+Fixes vs v14
+-------------
+  A  DT x2 correction (reports diameter not radius)
+  B  Adaptive solid_fill_sigma (0.35 * radius, clamped [0.3, 1.5])
+  C  VOI prior radius correction (--prior-uses-radius for v14-measured priors)
+  D  ASCII validation labels
+  E  Morphometric consistency (implied Tb.N vs user Tb.N -> sparser skeleton)
+  F  Re-skeletonize after reconnection closing (1-voxel medial axis)
+  G  Reduced reconnect_close_iters=2, prune_lmin=6
 
 Outputs
 -------
-  mask.tif        bone=255, void=0
-  void.tif        void=255, bone=0
-  mid.png         mid-slice of mask
-  gray.tif        solid micro-CT grayscale  (if --write-gray 1)
-  gray_mid.png    mid-slice of grayscale
-  metrics.json    morphometrics, targets, validation, params
-  debug/          intermediate TIFFs        (if --debug-skeleton 1)
+  mask.tif, void.tif, mid.png, gray.tif, gray_mid.png, metrics.json, debug/
 """
 
 from __future__ import annotations
@@ -75,7 +58,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Tuple, Dict, Any, Optional
+from typing import Tuple, Dict, Any, Optional, List
 
 import numpy as np
 from PIL import Image
@@ -94,16 +77,146 @@ except ImportError:
 
 
 # ---------------------------------------------------------------
-# Literature reference values  (Tamimi et al., Bone 140, 2020)
+# Literature validation bounds (Tamimi et al., Bone 140, 2020)
+# Used ONLY for flagging out-of-range results, NOT as targets
 # ---------------------------------------------------------------
-TAMIMI_HF = {
-    "BVTV": 0.2037, "TbTh_um": 180.0,
-    "TbN_per_mm": 1.5, "TbSp_um": 580.0,
+TAMIMI_BOUNDS = {
+    "BVTV":       {"lo": 0.05,  "hi": 0.50,  "unit": "fraction"},
+    "TbTh_um":    {"lo": 80.0,  "hi": 300.0, "unit": "um"},
+    "TbN_per_mm": {"lo": 0.5,   "hi": 5.0,   "unit": "/mm"},
+    "TbSp_um":    {"lo": 150.0, "hi": 1200.0, "unit": "um"},
 }
-TAMIMI_HOA = {
-    "BVTV": 0.2862, "TbTh_um": 130.0,
-    "TbN_per_mm": 2.58, "TbSp_um": 420.0,
-}
+
+# Literature profiles (fallback only when no VOI data provided)
+TAMIMI_HF = {"BVTV": 0.2037, "TbTh_um": 180.0, "TbN_per_mm": 1.5, "TbSp_um": 580.0}
+TAMIMI_HOA = {"BVTV": 0.2862, "TbTh_um": 130.0, "TbN_per_mm": 2.58, "TbSp_um": 420.0}
+
+
+# ---------------------------------------------------------------
+# VOI targets loader
+# ---------------------------------------------------------------
+def load_voi_targets(targets_json: str) -> Dict[str, Any]:
+    """Load targets.json produced by pipeline_voi1_multiframe_dcm_to_targets.py.
+
+    Expected keys: BVTV, TbTh_um_p50, TbTh_um_p90, TbSp_um_p50, TbSp_um_p90,
+                   voxel_um_zyx, shape_zyx, Euler, ConnProxy
+    """
+    p = Path(targets_json)
+    if not p.exists():
+        raise FileNotFoundError(f"VOI targets file not found: {p}")
+    with open(p) as f:
+        data = json.load(f)
+    print(f"Loaded VOI targets from: {p}")
+
+    # Print what we got
+    bvtv = data.get("BVTV", None)
+    tbth = data.get("TbTh_um_p90", data.get("TbTh_um_p50", None))
+    tbsp = data.get("TbSp_um_p50", None)
+    vox = data.get("voxel_um_zyx", None)
+    shp = data.get("shape_zyx", None)
+    print(f"  BV/TV    = {bvtv}")
+    print(f"  Tb.Th    = {tbth} um (p90)")
+    print(f"  Tb.Sp    = {tbsp} um (p50)")
+    print(f"  Voxel    = {vox} um")
+    print(f"  Shape    = {shp}")
+    return data
+
+
+def find_targets_files(targets_dir: str) -> List[Path]:
+    """Find all *_targets.json files in a directory."""
+    d = Path(targets_dir)
+    files = sorted(d.glob("*_targets.json"))
+    if not files:
+        raise FileNotFoundError(f"No *_targets.json files found in {d}")
+    return files
+
+
+def extract_generation_params(voi: Dict[str, Any],
+                              args: argparse.Namespace) -> Dict[str, Any]:
+    """Extract generation parameters from VOI targets, with CLI overrides.
+
+    The VOI pipeline (pipeline_voi1_multiframe_dcm_to_targets.py) reports
+    DT values as inscribed radii. For the generator we need:
+      - Tb.Th: use p90 (captures the thicker strut cores, not thin edges)
+      - Tb.Sp: use p50 (median spacing)
+
+    If --prior-uses-radius is set, multiply by 2 (the VOI pipeline
+    reports radius, not diameter).
+    """
+    rc = 2.0 if bool(int(args.prior_uses_radius)) else 1.0
+    if rc > 1.0:
+        print(f"  [v15-FIX C] Applying x{rc:.0f} radius->diameter correction to VOI targets")
+
+    # BV/TV: direct from VOI
+    bvtv = args.bvtv if args.bvtv is not None else voi.get("BVTV")
+    if bvtv is None:
+        raise ValueError("No BV/TV found in VOI targets or CLI")
+
+    # Tb.Th: prefer p90 from VOI (captures structural thickness better than p50)
+    tbth_um = args.tbth_um
+    if tbth_um is None:
+        for k in ("TbTh_um_p90", "TbTh_um_p50", "tbth_um_p90", "tbth_um_p50"):
+            if k in voi and voi[k] is not None and float(voi[k]) > 0:
+                tbth_um = float(voi[k]) * rc
+                print(f"  Tb.Th <- {tbth_um:.1f} um (from VOI '{k}' x{rc:.0f})")
+                break
+    if tbth_um is None:
+        raise ValueError("No Tb.Th found in VOI targets or CLI")
+
+    # Tb.Sp: prefer p50 from VOI
+    tbsp_um = args.tbsp_um
+    if tbsp_um is None:
+        for k in ("TbSp_um_p50", "TbSp_um_p90", "tbsp_um_p50"):
+            if k in voi and voi[k] is not None and float(voi[k]) > 0:
+                tbsp_um = float(voi[k]) * rc
+                print(f"  Tb.Sp <- {tbsp_um:.1f} um (from VOI '{k}' x{rc:.0f})")
+                break
+    if tbsp_um is None:
+        raise ValueError("No Tb.Sp found in VOI targets or CLI")
+
+    # Tb.N: derive from BV/TV and Tb.Th (standard relationship)
+    # Tb.N = BV/TV / (Tb.Th in mm)
+    tbn_per_mm = args.tbn_per_mm
+    if tbn_per_mm is None:
+        tbn_per_mm = float(bvtv) / (float(tbth_um) / 1000.0)
+        print(f"  Tb.N <- {tbn_per_mm:.2f} /mm (derived: BV/TV / Tb.Th)")
+
+    # Voxel size: from VOI metadata or CLI
+    voxel_um = args.voxel_um
+    if voxel_um is None:
+        vox_zyx = voi.get("voxel_um_zyx")
+        if vox_zyx is not None and len(vox_zyx) >= 1:
+            voxel_um = float(vox_zyx[0])  # use Z spacing (isotropic assumed)
+            print(f"  Voxel <- {voxel_um:.1f} um (from VOI metadata)")
+    if voxel_um is None:
+        voxel_um = 39.0
+        print(f"  Voxel <- {voxel_um:.1f} um (default fallback)")
+
+    # Shape: from VOI metadata or CLI
+    shape_z = args.z
+    shape_xy = args.xy
+    shp_zyx = voi.get("shape_zyx")
+    if shp_zyx is not None and len(shp_zyx) >= 3:
+        if shape_z is None:
+            shape_z = int(shp_zyx[0])
+        if shape_xy is None:
+            shape_xy = int(shp_zyx[1])  # assume square XY
+        print(f"  Shape <- Z={shape_z}, XY={shape_xy} (from VOI metadata)")
+    # Defaults if still None
+    if shape_z is None:
+        shape_z = 160
+    if shape_xy is None:
+        shape_xy = 512
+
+    return {
+        "bvtv": float(bvtv),
+        "tbth_um": float(tbth_um),
+        "tbn_per_mm": float(tbn_per_mm),
+        "tbsp_um": float(tbsp_um),
+        "voxel_um": float(voxel_um),
+        "shape_z": int(shape_z),
+        "shape_xy": int(shape_xy),
+    }
 
 
 # ---------------------------------------------------------------
@@ -122,8 +235,8 @@ class RidgeParams:
     proto_open_iters: int = 0
     proto_min_component: int = 400
     use_skeleton: bool = True
-    skeleton_prune_lmin: int = 6       # v15-FIX G (was 8)
-    reconnect_close_iters: int = 2     # v15-FIX G (was 3)
+    skeleton_prune_lmin: int = 6
+    reconnect_close_iters: int = 2
     radius_mode: str = "branch"
     radius_jitter: float = 0.15
     radius_smooth_sigma: float = 3.0
@@ -136,7 +249,7 @@ class GrayParams:
     write_gray: bool = True
     marrow_mean: float = 15.0
     bone_mean: float = 240.0
-    solid_fill_sigma: Optional[float] = None   # None = auto (v15-FIX B)
+    solid_fill_sigma: Optional[float] = None
     pve_sigma: float = 0.5
     noise_sd: float = 3.0
     bg_tex_sd: float = 1.0
@@ -167,26 +280,20 @@ def save_json(obj: Dict[str, Any], path: Path) -> None:
 # Target -> parameter derivation
 # ---------------------------------------------------------------
 def tbth_um_to_radius_vox(tbth_um: float, voxel_um: float) -> float:
-    """Tb.Th (full diameter, um) -> base radius in voxels."""
     return max(0.5, (tbth_um / voxel_um) / 2.0)
 
 
 def tbn_per_mm_to_base_sigma(tbn_per_mm: float, voxel_um: float) -> float:
-    """Tb.N (/mm) -> Gaussian field sigma (voxels).
-    period = 1000/Tb.N um -> period_vox -> sigma ~ period_vox / 4."""
     period_um = 1000.0 / max(0.1, float(tbn_per_mm))
     return float(max(1.5, period_um / float(voxel_um) / 4.0))
 
 
 def compute_adaptive_fill_sigma(base_radius_vox: float) -> float:
-    """v15-FIX B: fill sigma = 0.35 * radius, clamped [0.3, 1.5]."""
     return float(np.clip(0.35 * base_radius_vox, 0.3, 1.5))
 
 
 def derive_consistent_sigma(bvtv: float, tbth_um: float,
                             tbn_per_mm: float, voxel_um: float) -> float:
-    """v15-FIX E: use the sparser skeleton (larger sigma) of user Tb.N
-    vs implied Tb.N = BV/TV / Tb.Th."""
     implied_tbn = bvtv / max(0.01, tbth_um / 1000.0)
     return max(tbn_per_mm_to_base_sigma(tbn_per_mm, voxel_um),
                tbn_per_mm_to_base_sigma(implied_tbn, voxel_um))
@@ -217,7 +324,7 @@ def smooth_warp(field: np.ndarray, rng: np.random.Generator,
 
 
 # ---------------------------------------------------------------
-# Hessian ridge response (Frangi-style vesselness)
+# Hessian ridge response
 # ---------------------------------------------------------------
 def hessian_eigs_3d(f: np.ndarray,
                     sigma: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -296,7 +403,7 @@ def morph_iters(vol: np.ndarray, op: str, iters: int) -> np.ndarray:
 
 
 # ---------------------------------------------------------------
-# Proto-network hysteresis thresholding
+# Proto-network hysteresis
 # ---------------------------------------------------------------
 def hysteresis_on_response(R: np.ndarray, q_lo: float,
                            q_hi: float) -> Tuple[np.ndarray, Dict[str, float]]:
@@ -318,7 +425,7 @@ def hysteresis_on_response(R: np.ndarray, q_lo: float,
 
 
 # ---------------------------------------------------------------
-# Skeletonization backends
+# Skeletonization
 # ---------------------------------------------------------------
 def skeletonize_with_skimage(proto01: np.ndarray) -> np.ndarray:
     if skeletonize_3d is None:
@@ -351,7 +458,7 @@ def skeletonize_with_fiji(proto01: np.ndarray, fiji_exe: str,
 
 
 # ---------------------------------------------------------------
-# Skeleton pruning (spur removal)
+# Skeleton pruning
 # ---------------------------------------------------------------
 def neighbor_degree_26(skel: np.ndarray) -> np.ndarray:
     st = ndi.generate_binary_structure(3, 2)
@@ -403,31 +510,26 @@ def make_proto_and_skeleton(
     debug_dir: Optional[Path],
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
 
-    # 1. Random field + smooth + warp
     f = rng.normal(0, 1, size=shape).astype(np.float32)
     f = ndi.gaussian_filter(f, sigma=float(rp.base_sigma))
     f = smooth_warp(f, rng, float(rp.warp_sigma), float(rp.warp_amp))
     f = normalize(f)
 
-    # 2. Ridge detection
     R = vesselness_ridge(f, sigma=float(rp.hessian_sigma))
     R = np.clip(R * float(rp.ridge_strength), 0.0, 1.0)
 
-    # 3. Proto-network via hysteresis
     proto01, hyst_info = hysteresis_on_response(
         R, q_lo=float(rp.proto_q_lo), q_hi=float(rp.proto_q_hi))
     proto01 = morph_iters(proto01, "close", int(rp.proto_close_iters))
     proto01 = morph_iters(proto01, "open", int(rp.proto_open_iters))
     proto01 = remove_small_components(proto01, int(rp.proto_min_component))
 
-    # Extra closing to bridge gaps before skeletonization
     st26 = ndi.generate_binary_structure(3, 2)
     if proto01.astype(bool).sum() > 0:
         proto01 = ndi.binary_closing(
             proto01.astype(bool), structure=st26, iterations=1
         ).astype(np.uint8)
 
-    # 4. Skeletonize
     skel_raw = proto01.copy().astype(np.uint8)
     used_skel = False
     if bool(rp.use_skeleton):
@@ -442,20 +544,15 @@ def make_proto_and_skeleton(
                 proto01, fiji_exe=fiji_exe, outdir=wd, command_name=fiji_command)
             used_skel = True
 
-    # 5. Prune short spurs
     skel_pruned, prune_info = prune_short_end_branches(
         skel_raw, lmin=int(rp.skeleton_prune_lmin))
 
-    # 6. Reconnection closing + v15-FIX F re-skeletonize
     if int(rp.reconnect_close_iters) > 0:
         skel_pruned = morph_iters(skel_pruned, "close", int(rp.reconnect_close_iters))
-        # v15-FIX F: closing inflates skeleton to multi-voxel width.
-        # Re-skeletonize to restore 1-voxel medial axis so the radius
-        # field (from Tb.Th target) controls strut thickness.
+        # v15-FIX F: re-skeletonize to restore 1-voxel medial axis
         if used_skel and skeletonize_3d is not None:
             skel_pruned = skeletonize_3d(skel_pruned.astype(bool)).astype(np.uint8)
 
-    # Debug output
     if debug_dir is not None:
         save_tif_u8((R * 255).astype(np.uint8), debug_dir / "ridge_response.tif")
         save_tif_u8((proto01 * 255).astype(np.uint8), debug_dir / "proto_network.tif")
@@ -471,7 +568,7 @@ def make_proto_and_skeleton(
 
 
 # ---------------------------------------------------------------
-# Radius field + thickening + BV/TV binary-search fit
+# Radius field + thickening + BV/TV fit
 # ---------------------------------------------------------------
 def radius_samples_for_skeleton(
     skel01: np.ndarray, rng: np.random.Generator,
@@ -516,8 +613,7 @@ def thicken_from_skeleton_radius_field(
     rad_skel = radius_samples_for_skeleton(
         skel01, rng=rng, base_radius_vox=base_radius_vox,
         mode=radius_mode, jitter=radius_jitter,
-        smooth_sigma=radius_smooth_sigma,
-    )
+        smooth_sigma=radius_smooth_sigma)
     dist, inds = ndi.distance_transform_edt(~sk, return_indices=True)
     iz, iy, ix = inds
     rad_field = rad_skel[iz, iy, ix].astype(np.float32)
@@ -525,8 +621,6 @@ def thicken_from_skeleton_radius_field(
     min_r = float(max(0.5, 0.3 * base_radius_vox))
     rad_field = np.maximum(rad_field, min_r)
 
-    # v15-FIX E: scale floor 0.7 prevents struts shrinking below
-    # ~70% of target Tb.Th.
     target = float(np.clip(target_bvtv, 0.01, 0.95))
     lo, hi = 0.7, 3.0
     best_scale = float(np.clip(radius_scale_hint, lo, hi))
@@ -564,7 +658,7 @@ def thicken_from_skeleton_radius_field(
 
 
 # ---------------------------------------------------------------
-# v15-FIX B: Solid micro-CT grayscale with adaptive fill sigma
+# Solid micro-CT grayscale (v15-FIX B)
 # ---------------------------------------------------------------
 def microct_gray_solid(bone01: np.ndarray, gp: GrayParams,
                        rng: np.random.Generator,
@@ -593,15 +687,10 @@ def microct_gray_solid(bone01: np.ndarray, gp: GrayParams,
 
 
 # ---------------------------------------------------------------
-# v15-FIX A: Corrected morphometric measurements (x2 diameter)
+# Morphometric measurement (v15-FIX A: x2 correction)
 # ---------------------------------------------------------------
 def measure_all_morphometrics(vol01: np.ndarray,
                               voxel_um: float) -> Dict[str, float]:
-    """Measure BV/TV, Tb.Th, Tb.Sp, Tb.N.
-
-    v15-FIX A: distance_transform_edt gives inscribed RADIUS.
-    Tb.Th and Tb.Sp are DIAMETERS -> multiply by 2.
-    """
     bone = vol01.astype(bool)
     bvtv_val = float(bone.mean())
 
@@ -614,7 +703,6 @@ def measure_all_morphometrics(vol01: np.ndarray,
     def pct(x, p):
         return float(np.percentile(x, p)) if x.size else 0.0
 
-    # v15-FIX A: x2 for full diameter
     tbth_p50 = 2.0 * pct(tbth_vals, 50)
     tbth_p90 = 2.0 * pct(tbth_vals, 90)
     tbsp_p50 = 2.0 * pct(tbsp_vals, 50)
@@ -665,7 +753,7 @@ def skeleton_graph_stats(skel01: np.ndarray) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------
-# v15-FIX D: Validation with ASCII labels
+# Validation (v15-FIX D: ASCII labels, Tamimi bounds for warnings)
 # ---------------------------------------------------------------
 def validate_morphometrics(measured: Dict[str, float],
                            targets: Dict[str, float]) -> Dict[str, Any]:
@@ -696,181 +784,59 @@ def validate_morphometrics(measured: Dict[str, float],
     return checks
 
 
-# ---------------------------------------------------------------
-# v15-FIX C: Prior loader with radius correction
-# ---------------------------------------------------------------
-def apply_priors(args: argparse.Namespace) -> Dict[str, Any]:
-    if args.priors_json is None:
-        return {}
-    pp = Path(args.priors_json)
-    if not pp.exists():
-        print(f"Priors not found: {pp}")
-        return {}
-    with open(pp) as f:
-        pri = json.load(f)
-    print(f"Loaded priors from: {pp}")
-
-    rc = 2.0 if bool(int(args.prior_uses_radius)) else 1.0
-    if rc > 1:
-        print(f"  [v15-FIX C] x{rc:.0f} radius->diameter correction")
-
-    if args.bvtv is None and "BVTV" in pri:
-        args.bvtv = float(pri["BVTV"])
-        print(f"  BV/TV  <- {args.bvtv:.3f}")
-    if args.tbth_um is None:
-        for k in ("TbTh_um_p50", "tbth_um_p50", "TbTh_um_p90", "tbth_um_p90"):
-            if k in pri:
-                args.tbth_um = float(pri[k]) * rc
-                print(f"  Tb.Th  <- {args.tbth_um:.1f} um (from '{k}', x{rc:.0f})")
-                break
-    if args.tbn_per_mm is None:
-        for k in ("TbN_per_mm", "tbn_per_mm"):
-            if k in pri:
-                args.tbn_per_mm = float(pri[k])
-                print(f"  Tb.N   <- {args.tbn_per_mm:.2f} /mm")
-                break
-    if args.tbsp_um is None:
-        for k in ("TbSp_um_p50", "tbsp_um_p50", "TbSp_p50"):
-            if k in pri:
-                args.tbsp_um = float(pri[k]) * rc
-                print(f"  Tb.Sp  <- {args.tbsp_um:.1f} um (from '{k}', x{rc:.0f})")
-                break
-    return pri
+def check_tamimi_bounds(measured: Dict[str, float]) -> List[str]:
+    """Check measured values against Tamimi literature bounds. Returns warnings."""
+    warnings = []
+    mapping = [
+        ("BVTV", "BVTV"),
+        ("TbTh_um_p50", "TbTh_um"),
+        ("TbN_per_mm", "TbN_per_mm"),
+        ("TbSp_um_p50", "TbSp_um"),
+    ]
+    for meas_key, bound_key in mapping:
+        val = measured.get(meas_key)
+        bounds = TAMIMI_BOUNDS.get(bound_key)
+        if val is not None and bounds is not None:
+            if float(val) < bounds["lo"] or float(val) > bounds["hi"]:
+                warnings.append(
+                    f"{meas_key}={float(val):.2f} outside Tamimi range "
+                    f"[{bounds['lo']}, {bounds['hi']}] {bounds['unit']}")
+    return warnings
 
 
 # ---------------------------------------------------------------
-# CLI
+# Single-specimen generation
 # ---------------------------------------------------------------
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
-        description="v15 trabecular bone generator (Tamimi-calibrated)")
+def generate_one(params: Dict[str, Any], args: argparse.Namespace,
+                 outdir: Path, voi_source: Optional[Dict] = None) -> Dict[str, Any]:
+    """Generate one synthetic volume from extracted parameters."""
 
-    p.add_argument("--outdir", type=str, default="data/synth/v15")
-    p.add_argument("--xy", type=int, default=512)
-    p.add_argument("--z", type=int, default=160)
-    p.add_argument("--seed", type=int, default=23)
-    p.add_argument("--voxel-um", type=float, default=39.0)
-
-    # Morphometric targets
-    p.add_argument("--bvtv", type=float, default=None)
-    p.add_argument("--tbth-um", type=float, default=None,
-                   help="Target Tb.Th (full diameter, um)")
-    p.add_argument("--tbn-per-mm", type=float, default=None)
-    p.add_argument("--tbsp-um", type=float, default=None,
-                   help="Target Tb.Sp (full gap width, um)")
-    p.add_argument("--priors-json", type=str, default=None)
-    p.add_argument("--prior-uses-radius", type=int, default=0,
-                   help="1 = priors were measured with v14 (half-thickness)")
-    p.add_argument("--profile", type=str, default=None,
-                   choices=["tamimi-hf", "tamimi-hoa"],
-                   help="Use published morphometric profile as targets")
-
-    # Ridge / warp
-    p.add_argument("--base-sigma", type=float, default=None)
-    p.add_argument("--warp-sigma", type=float, default=14.0)
-    p.add_argument("--warp-amp", type=float, default=4.8)
-    p.add_argument("--hessian-sigma", type=float, default=1.4)
-    p.add_argument("--ridge-strength", type=float, default=1.0)
-
-    # Proto-network
-    p.add_argument("--proto-q-hi", type=float, default=0.92)
-    p.add_argument("--proto-q-lo", type=float, default=0.84)
-    p.add_argument("--proto-close-iters", type=int, default=2)
-    p.add_argument("--proto-open-iters", type=int, default=0)
-    p.add_argument("--proto-min-component", type=int, default=400)
-
-    # Skeleton
-    p.add_argument("--use-skeleton", type=int, default=1)
-    p.add_argument("--skeleton-mode", type=str, default="skimage",
-                   choices=["skimage", "fiji"])
-    p.add_argument("--fiji-exe", type=str, default=None)
-    p.add_argument("--fiji-command", type=str, default="Skeletonize (2D/3D)")
-    p.add_argument("--skeleton-prune-lmin", type=int, default=6)
-    p.add_argument("--reconnect-close-iters", type=int, default=2)
-
-    # Radius
-    p.add_argument("--radius-mode", type=str, default="branch",
-                   choices=["branch", "voxel"])
-    p.add_argument("--radius-jitter", type=float, default=0.15)
-    p.add_argument("--radius-smooth-sigma", type=float, default=3.0)
-    p.add_argument("--radius-scale-hint", type=float, default=1.0)
-
-    # Connectivity
-    p.add_argument("--enforce-lcc", type=int, default=1)
-    p.add_argument("--min-component-size", type=int, default=500)
-
-    # Post-processing
-    p.add_argument("--round-sigma", type=float, default=0.7)
-    p.add_argument("--solid-fill-sigma", type=float, default=None,
-                   help="Override fill sigma. None = auto (0.35*radius)")
-    p.add_argument("--write-gray", type=int, default=1)
-    p.add_argument("--debug-skeleton", type=int, default=0)
-
-    return p
-
-
-# ---------------------------------------------------------------
-# main
-# ---------------------------------------------------------------
-def main() -> None:
-    args = build_parser().parse_args()
     rng = np.random.default_rng(int(args.seed))
 
-    # --- Profile presets ---
-    if args.profile == "tamimi-hf":
-        ref = TAMIMI_HF
-        print("Using Tamimi et al. Hip Fracture profile")
-    elif args.profile == "tamimi-hoa":
-        ref = TAMIMI_HOA
-        print("Using Tamimi et al. Hip Osteoarthritis profile")
-    else:
-        ref = None
-    if ref is not None:
-        if args.bvtv is None:       args.bvtv = ref["BVTV"]
-        if args.tbth_um is None:    args.tbth_um = ref["TbTh_um"]
-        if args.tbn_per_mm is None: args.tbn_per_mm = ref["TbN_per_mm"]
-        if args.tbsp_um is None:    args.tbsp_um = ref["TbSp_um"]
+    bvtv = params["bvtv"]
+    tbth_um = params["tbth_um"]
+    tbn_per_mm = params["tbn_per_mm"]
+    tbsp_um = params["tbsp_um"]
+    voxel_um = params["voxel_um"]
+    shape = (params["shape_z"], params["shape_xy"], params["shape_xy"])
 
-    # --- Load priors ---
-    priors = apply_priors(args)
+    base_radius_vox = tbth_um_to_radius_vox(tbth_um, voxel_um)
+    base_sigma = (float(args.base_sigma) if args.base_sigma is not None
+                  else derive_consistent_sigma(bvtv, tbth_um, tbn_per_mm, voxel_um))
 
-    # --- Defaults (Tamimi HF if nothing specified) ---
-    if args.bvtv is None:
-        args.bvtv = TAMIMI_HF["BVTV"]
-        print(f"Default BV/TV = {args.bvtv:.3f} (Tamimi HF)")
-    if args.tbth_um is None:
-        args.tbth_um = TAMIMI_HF["TbTh_um"]
-        print(f"Default Tb.Th = {args.tbth_um:.0f} um (Tamimi HF)")
-    if args.tbn_per_mm is None:
-        args.tbn_per_mm = TAMIMI_HF["TbN_per_mm"]
-        print(f"Default Tb.N  = {args.tbn_per_mm:.1f} /mm (Tamimi HF)")
-    if args.tbsp_um is None:
-        args.tbsp_um = TAMIMI_HF["TbSp_um"]
-        print(f"Default Tb.Sp = {args.tbsp_um:.0f} um (Tamimi HF)")
+    print(f"\n  Targets: BV/TV={bvtv:.3f}, Tb.Th={tbth_um:.0f}um, "
+          f"Tb.N={tbn_per_mm:.2f}/mm, Tb.Sp={tbsp_um:.0f}um")
+    print(f"  Derived: base_sigma={base_sigma:.2f}vox, "
+          f"base_radius={base_radius_vox:.2f}vox")
+    print(f"  Volume:  {shape}, voxel={voxel_um:.1f}um")
 
-    # --- v15-FIX E: Consistent sigma ---
-    if args.base_sigma is None:
-        args.base_sigma = derive_consistent_sigma(
-            float(args.bvtv), float(args.tbth_um),
-            float(args.tbn_per_mm), float(args.voxel_um))
-        implied_tbn = float(args.bvtv) / (float(args.tbth_um) / 1000.0)
-        print(f"  base_sigma = {args.base_sigma:.2f} vox "
-              f"(user Tb.N={args.tbn_per_mm:.2f}, implied={implied_tbn:.2f})")
-
-    base_radius_vox = tbth_um_to_radius_vox(float(args.tbth_um), float(args.voxel_um))
-    print(f"  base_radius = {base_radius_vox:.2f} vox "
-          f"(Tb.Th={args.tbth_um:.0f}um / {args.voxel_um:.0f}um / 2)")
-
-    outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     debug_dir = outdir / "debug" if bool(int(args.debug_skeleton)) else None
     if debug_dir is not None:
         debug_dir.mkdir(parents=True, exist_ok=True)
 
-    shape = (int(args.z), int(args.xy), int(args.xy))
-
     rp = RidgeParams(
-        base_sigma=float(args.base_sigma),
+        base_sigma=base_sigma,
         warp_sigma=float(args.warp_sigma),
         warp_amp=float(args.warp_amp),
         hessian_sigma=float(args.hessian_sigma),
@@ -893,27 +859,24 @@ def main() -> None:
         solid_fill_sigma=args.solid_fill_sigma,
     )
 
-    # === Generate ===
-    print(f"\nGenerating {shape} (voxel={args.voxel_um}um)...")
+    # --- Generate ---
     skel01, skel_info = make_proto_and_skeleton(
         shape=shape, rp=rp, rng=rng,
         skeleton_mode=str(args.skeleton_mode),
         fiji_exe=args.fiji_exe,
         fiji_command=str(args.fiji_command),
-        debug_dir=debug_dir,
-    )
-    print(f"  Skeleton voxels: {int(skel01.sum())}")
+        debug_dir=debug_dir)
+    print(f"  Skeleton: {int(skel01.sum())} voxels")
 
     bone01, thick_info = thicken_from_skeleton_radius_field(
         skel01=skel01, rng=rng,
-        target_bvtv=float(args.bvtv),
+        target_bvtv=bvtv,
         base_radius_vox=base_radius_vox,
         radius_mode=str(args.radius_mode),
         radius_jitter=float(args.radius_jitter),
         radius_smooth_sigma=float(args.radius_smooth_sigma),
         radius_scale_hint=float(args.radius_scale_hint),
-        debug_dir=debug_dir,
-    )
+        debug_dir=debug_dir)
 
     bone01 = anti_block_round(bone01, sigma=float(args.round_sigma))
     if int(args.min_component_size) > 0:
@@ -930,60 +893,201 @@ def main() -> None:
     if gp.write_gray:
         used_sigma = (gp.solid_fill_sigma if gp.solid_fill_sigma is not None
                       else compute_adaptive_fill_sigma(base_radius_vox))
-        print(f"  Fill sigma: {used_sigma:.3f} "
-              f"({'auto' if gp.solid_fill_sigma is None else 'manual'})")
+        print(f"  Fill sigma: {used_sigma:.3f}")
         gray = microct_gray_solid(bone01, gp, rng, base_radius_vox=base_radius_vox)
         save_tif_u8(gray, outdir / "gray.tif")
         save_png_u8(gray[Z // 2], outdir / "gray_mid.png")
 
-    # === Measure + validate ===
-    print("\nMorphometrics (v15, x2-corrected)...")
-    morphometrics = measure_all_morphometrics(bone01, voxel_um=float(args.voxel_um))
+    # --- Measure + validate ---
+    morphometrics = measure_all_morphometrics(bone01, voxel_um=voxel_um)
     targets_dict = {
-        "bvtv_target":    float(args.bvtv),
-        "tbth_um_target": float(args.tbth_um),
-        "tbn_target":     float(args.tbn_per_mm),
-        "tbsp_um_target": float(args.tbsp_um),
+        "bvtv_target": bvtv,
+        "tbth_um_target": tbth_um,
+        "tbn_target": tbn_per_mm,
+        "tbsp_um_target": tbsp_um,
     }
     validation = validate_morphometrics(morphometrics, targets_dict)
+    tamimi_warnings = check_tamimi_bounds(morphometrics)
 
     met: Dict[str, Any] = {
         "version": "v15",
-        "literature_ref": "Tamimi et al., Bone 140 (2020) 115558",
+        "source": "VOI" if voi_source is not None else "manual/literature",
+        "voi_targets_file": str(voi_source.get("source_dcm", "")) if voi_source else None,
         "morphometrics": morphometrics,
         "targets": targets_dict,
         "validation": validation,
+        "tamimi_bound_warnings": tamimi_warnings,
         "skeleton_stats": skeleton_graph_stats(skel01),
         "skeleton_info": skel_info,
         "thick_info": thick_info,
-        "priors_used": priors,
-        "params": {
-            "ridge": asdict(rp),
-            "gray": asdict(gp),
-            "round_sigma": float(args.round_sigma),
-        },
+        "params": {"ridge": asdict(rp), "gray": asdict(gp),
+                    "round_sigma": float(args.round_sigma)},
         "shape_zyx": list(shape),
-        "voxel_um": float(args.voxel_um),
+        "voxel_um": voxel_um,
     }
     save_json(met, outdir / "metrics.json")
 
-    # === Print validation table ===
-    print(f"\n{'=' * 58}")
-    print(f"  MORPHOMETRIC VALIDATION (v15)")
-    print(f"{'=' * 58}")
-    print(f"  {'Metric':<22} {'Target':>9} {'Measured':>10} {'Error':>7} {'':>5}")
-    print(f"  {'-' * 56}")
+    # --- Print validation ---
+    print(f"\n  {'Metric':<22} {'Target':>9} {'Measured':>10} {'Error':>7}")
+    print(f"  {'-' * 52}")
     for label, chk in validation.items():
         if label == "Connectivity (LCC)":
-            s = "PASS" if chk["pass"] else "FAIL <<"
+            s = "PASS" if chk["pass"] else "FAIL"
             print(f"  {'Connectivity (LCC)':<22} {'>=0.80':>9} "
-                  f"{chk['lcc_frac']:>10.3f} {'-':>7}  {s}")
+                  f"{chk['lcc_frac']:>10.3f} {'':>7} {s}")
         else:
-            s = "PASS" if chk["pass"] else "FAIL <<"
+            s = "PASS" if chk["pass"] else "FAIL"
             print(f"  {label:<22} {chk['target']:>9.2f} "
-                  f"{chk['measured']:>10.2f} {chk['rel_error']:>6.1%}  {s}")
-    print(f"{'=' * 58}")
-    print(f"\nOutputs: {outdir}/")
+                  f"{chk['measured']:>10.2f} {chk['rel_error']:>6.1%} {s}")
+    if tamimi_warnings:
+        print(f"\n  Tamimi bound warnings:")
+        for w in tamimi_warnings:
+            print(f"    ! {w}")
+
+    return met
+
+
+# ---------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        description="v15 trabecular generator (VOI-driven, Tamimi-validated)")
+
+    # === PRIMARY INPUT: VOI targets ===
+    p.add_argument("--targets-json", type=str, default=None,
+                   help="Path to a single *_targets.json from the VOI pipeline.")
+    p.add_argument("--targets-dir", type=str, default=None,
+                   help="Directory of *_targets.json files (batch mode).")
+
+    # === FALLBACK: literature profiles ===
+    p.add_argument("--profile", type=str, default=None,
+                   choices=["tamimi-hf", "tamimi-hoa"],
+                   help="Literature profile (used only if no --targets-json/dir)")
+
+    # === Output ===
+    p.add_argument("--outdir", type=str, default="data/synth/v15")
+    p.add_argument("--seed", type=int, default=23)
+
+    # === Overrides (take precedence over VOI values) ===
+    p.add_argument("--bvtv", type=float, default=None)
+    p.add_argument("--tbth-um", type=float, default=None)
+    p.add_argument("--tbn-per-mm", type=float, default=None)
+    p.add_argument("--tbsp-um", type=float, default=None)
+    p.add_argument("--voxel-um", type=float, default=None)
+    p.add_argument("--xy", type=int, default=None)
+    p.add_argument("--z", type=int, default=None)
+
+    # === Prior correction ===
+    p.add_argument("--prior-uses-radius", type=int, default=1,
+                   help="1 = VOI pipeline reports DT radius (x2 to get diameter). "
+                        "Default 1 because pipeline_voi1 reports radius.")
+
+    # === Ridge / warp ===
+    p.add_argument("--base-sigma", type=float, default=None)
+    p.add_argument("--warp-sigma", type=float, default=14.0)
+    p.add_argument("--warp-amp", type=float, default=4.8)
+    p.add_argument("--hessian-sigma", type=float, default=1.4)
+    p.add_argument("--ridge-strength", type=float, default=1.0)
+
+    # === Proto-network ===
+    p.add_argument("--proto-q-hi", type=float, default=0.92)
+    p.add_argument("--proto-q-lo", type=float, default=0.84)
+    p.add_argument("--proto-close-iters", type=int, default=2)
+    p.add_argument("--proto-open-iters", type=int, default=0)
+    p.add_argument("--proto-min-component", type=int, default=400)
+
+    # === Skeleton ===
+    p.add_argument("--use-skeleton", type=int, default=1)
+    p.add_argument("--skeleton-mode", type=str, default="skimage",
+                   choices=["skimage", "fiji"])
+    p.add_argument("--fiji-exe", type=str, default=None)
+    p.add_argument("--fiji-command", type=str, default="Skeletonize (2D/3D)")
+    p.add_argument("--skeleton-prune-lmin", type=int, default=6)
+    p.add_argument("--reconnect-close-iters", type=int, default=2)
+
+    # === Radius ===
+    p.add_argument("--radius-mode", type=str, default="branch",
+                   choices=["branch", "voxel"])
+    p.add_argument("--radius-jitter", type=float, default=0.15)
+    p.add_argument("--radius-smooth-sigma", type=float, default=3.0)
+    p.add_argument("--radius-scale-hint", type=float, default=1.0)
+
+    # === Connectivity ===
+    p.add_argument("--enforce-lcc", type=int, default=1)
+    p.add_argument("--min-component-size", type=int, default=500)
+
+    # === Post-processing ===
+    p.add_argument("--round-sigma", type=float, default=0.7)
+    p.add_argument("--solid-fill-sigma", type=float, default=None)
+    p.add_argument("--write-gray", type=int, default=1)
+    p.add_argument("--debug-skeleton", type=int, default=0)
+
+    return p
+
+
+# ---------------------------------------------------------------
+# main
+# ---------------------------------------------------------------
+def main() -> None:
+    args = build_parser().parse_args()
+
+    # --- Determine input source ---
+    if args.targets_json is not None:
+        # Single VOI targets file
+        voi = load_voi_targets(args.targets_json)
+        params = extract_generation_params(voi, args)
+        outdir = Path(args.outdir)
+        print(f"\n{'=' * 60}")
+        print(f"  Generating from VOI: {args.targets_json}")
+        print(f"{'=' * 60}")
+        generate_one(params, args, outdir, voi_source=voi)
+        print(f"\nOutputs: {outdir}/")
+
+    elif args.targets_dir is not None:
+        # Batch: all *_targets.json in directory
+        target_files = find_targets_files(args.targets_dir)
+        print(f"\nFound {len(target_files)} VOI targets files in {args.targets_dir}")
+        for tf in target_files:
+            specimen_name = tf.stem.replace("_targets", "")
+            voi = load_voi_targets(str(tf))
+            params = extract_generation_params(voi, args)
+            outdir = Path(args.outdir) / specimen_name
+            print(f"\n{'=' * 60}")
+            print(f"  Generating: {specimen_name}")
+            print(f"{'=' * 60}")
+            generate_one(params, args, outdir, voi_source=voi)
+        print(f"\nAll outputs: {args.outdir}/")
+
+    elif args.profile is not None:
+        # Literature fallback
+        if args.profile == "tamimi-hf":
+            ref = TAMIMI_HF
+            print("Using Tamimi et al. Hip Fracture profile (FALLBACK)")
+        else:
+            ref = TAMIMI_HOA
+            print("Using Tamimi et al. Hip Osteoarthritis profile (FALLBACK)")
+        if args.bvtv is None:       args.bvtv = ref["BVTV"]
+        if args.tbth_um is None:    args.tbth_um = ref["TbTh_um"]
+        if args.tbn_per_mm is None: args.tbn_per_mm = ref["TbN_per_mm"]
+        if args.tbsp_um is None:    args.tbsp_um = ref["TbSp_um"]
+        if args.voxel_um is None:   args.voxel_um = 39.0
+        params = {
+            "bvtv": float(args.bvtv), "tbth_um": float(args.tbth_um),
+            "tbn_per_mm": float(args.tbn_per_mm), "tbsp_um": float(args.tbsp_um),
+            "voxel_um": float(args.voxel_um),
+            "shape_z": args.z or 160, "shape_xy": args.xy or 512,
+        }
+        outdir = Path(args.outdir)
+        generate_one(params, args, outdir)
+        print(f"\nOutputs: {outdir}/")
+
+    else:
+        print("ERROR: Provide one of:")
+        print("  --targets-json <path>    (single VOI specimen)")
+        print("  --targets-dir  <path>    (batch all specimens)")
+        print("  --profile tamimi-hf      (literature fallback)")
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
