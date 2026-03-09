@@ -1,0 +1,114 @@
+{
+  "version": "v15 (v14-core, pooled)",
+  "sample_label": "sample_002",
+  "seed": 103,
+  "morphometrics": {
+    "BVTV": 0.4257519006729126,
+    "TbTh_um_p50": 110.30865786510142,
+    "TbTh_um_p90": 234.0,
+    "TbSp_um_p50": 156.0,
+    "TbSp_um_p90": 291.8492761683674,
+    "TbN_per_mm": 3.0671850506917004,
+    "Euler": -26046.0,
+    "ConnProxy": 26047.0,
+    "n_components": 1,
+    "lcc_frac": 1.0
+  },
+  "targets": {
+    "bvtv_target": 0.4227768343557819,
+    "tbth_um_target": 400.0,
+    "tbn_target": 1.0569420858894547,
+    "tbsp_um_target": 1500.0
+  },
+  "validation": {
+    "BV/TV": {
+      "measured": 0.4257519006729126,
+      "target": 0.4227768343557819,
+      "rel_error": 0.007036966255883017,
+      "tolerance": 0.05,
+      "pass": true
+    },
+    "Tb.Th (p50, um)": {
+      "measured": 110.30865786510142,
+      "target": 400.0,
+      "rel_error": 0.7242283553372465,
+      "tolerance": 0.15,
+      "pass": false
+    },
+    "Tb.N (/mm)": {
+      "measured": 3.0671850506917004,
+      "target": 1.0569420858894547,
+      "rel_error": 1.9019423974498606,
+      "tolerance": 0.2,
+      "pass": false
+    },
+    "Tb.Sp (p50, um)": {
+      "measured": 156.0,
+      "target": 1500.0,
+      "rel_error": 0.896,
+      "tolerance": 0.15,
+      "pass": false
+    },
+    "Connectivity (LCC)": {
+      "lcc_frac": 1.0,
+      "n_components": 1,
+      "pass": true,
+      "note": "LCC >= 0.80 required"
+    }
+  },
+  "tamimi_warnings": [],
+  "skeleton_stats": {
+    "skel_voxels": 550701,
+    "junctions": 282745,
+    "endpoints": 87078,
+    "endpoint_junction_ratio": 0.3079736158022246
+  },
+  "thick_info": {
+    "base_radius_vox": 5.128205128205129,
+    "min_radius_floor": 1.5384615384615385,
+    "radius_mode": "branch",
+    "scale_fit": 0.6726312190294266,
+    "bvtv_target": 0.4227768343557819,
+    "bvtv_after_thicken": 0.4227768421173096,
+    "warn_target_miss": false
+  },
+  "params": {
+    "ridge": {
+      "base_sigma": 6.064907903503482,
+      "warp_sigma": 14.0,
+      "warp_amp": 4.8,
+      "hessian_sigma": 1.4,
+      "ridge_strength": 1.0,
+      "proto_q_hi": 0.92,
+      "proto_q_lo": 0.84,
+      "proto_close_iters": 2,
+      "proto_open_iters": 0,
+      "proto_min_component": 400,
+      "use_skeleton": true,
+      "skeleton_prune_lmin": 8,
+      "reconnect_close_iters": 3,
+      "radius_mode": "branch",
+      "radius_jitter": 0.15,
+      "radius_smooth_sigma": 3.0,
+      "radius_scale_hint": 1.0,
+      "prune_small_components": 0
+    },
+    "gray": {
+      "write_gray": true,
+      "marrow_mean": 15.0,
+      "bone_mean": 240.0,
+      "solid_fill_sigma": 3.0,
+      "pve_sigma": 0.5,
+      "noise_sd": 3.0,
+      "bg_tex_sd": 1.0,
+      "unsharp": 0.6,
+      "unsharp_sigma": 0.8
+    }
+  },
+  "shape_zyx": [
+    160,
+    512,
+    512
+  ],
+  "voxel_um": 39.0
+}
