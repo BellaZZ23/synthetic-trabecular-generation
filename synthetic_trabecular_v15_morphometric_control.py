@@ -90,6 +90,7 @@ class RidgeParams:
     proto_q_hi:float=0.92; proto_q_lo:float=0.84; proto_close_iters:int=2; proto_open_iters:int=0; proto_min_component:int=400
     use_skeleton:bool=True; skeleton_prune_lmin:int=8; reconnect_close_iters:int=3
     radius_mode:str="branch"; radius_jitter:float=0.15; radius_smooth_sigma:float=3.0; radius_scale_hint:float=1.0; prune_small_components:int=0
+    aniso_ratio:float=2.5  # elongation factor: 1.0=isotropic blobs, 2-3=elongated rods
 @dataclass
 class GrayParams:
     write_gray:bool=True; marrow_mean:float=50.0; bone_mean:float=110.0; solid_fill_sigma:Optional[float]=None
@@ -161,7 +162,20 @@ def prune_short_end_branches(sk01,lmin):
     return sk.astype(np.uint8),{"prune_lmin":lmin,"vox_removed":rm}
 
 def make_proto_and_skeleton(shape,rp,rng,skel_mode,fiji_exe,fiji_cmd,dbg):
-    f=rng.normal(0,1,size=shape).astype(np.float32); f=ndi.gaussian_filter(f,sigma=float(rp.base_sigma))
+    # ELONGATED STRUT FIELD: take the MAXIMUM across multiple directionally-
+    # stretched noise fields. Unlike averaging (which destroys anisotropy),
+    # max-blending preserves the strongest elongated ridge in each region.
+    aniso = float(rp.aniso_ratio)
+    bs = float(rp.base_sigma)
+    sig_long = bs * aniso
+    sig_short = bs
+    
+    f_z = ndi.gaussian_filter(rng.normal(0,1,size=shape).astype(np.float32), sigma=(sig_long, sig_short, sig_short))
+    f_y = ndi.gaussian_filter(rng.normal(0,1,size=shape).astype(np.float32), sigma=(sig_short, sig_long, sig_short))
+    f_x = ndi.gaussian_filter(rng.normal(0,1,size=shape).astype(np.float32), sigma=(sig_short, sig_short, sig_long))
+    
+    # Max-blend: each voxel takes the strongest directional signal
+    f = np.maximum(np.maximum(f_z, f_y), f_x)
     f=smooth_warp(f,rng,float(rp.warp_sigma),float(rp.warp_amp)); f=normalize(f)
     R=vesselness_ridge(f,sigma=float(rp.hessian_sigma)); R=np.clip(R*float(rp.ridge_strength),0.0,1.0)
     p01,hy=hysteresis_on_response(R,float(rp.proto_q_lo),float(rp.proto_q_hi))
@@ -265,7 +279,7 @@ def generate_one(params,args,outdir,label="",seed_override=None):
     outdir.mkdir(parents=True,exist_ok=True)
     dbg=outdir/"debug" if bool(int(args.debug_skeleton)) else None
     if dbg: dbg.mkdir(parents=True,exist_ok=True)
-    rp=RidgeParams(base_sigma=bs,warp_sigma=float(args.warp_sigma),warp_amp=float(args.warp_amp),hessian_sigma=float(args.hessian_sigma),ridge_strength=float(args.ridge_strength),proto_q_hi=float(args.proto_q_hi),proto_q_lo=float(args.proto_q_lo),proto_close_iters=int(args.proto_close_iters),proto_open_iters=int(args.proto_open_iters),proto_min_component=int(args.proto_min_component),use_skeleton=bool(int(args.use_skeleton)),skeleton_prune_lmin=int(args.skeleton_prune_lmin),reconnect_close_iters=int(args.reconnect_close_iters),radius_mode=str(args.radius_mode),radius_jitter=float(args.radius_jitter),radius_smooth_sigma=float(args.radius_smooth_sigma),radius_scale_hint=float(args.radius_scale_hint))
+    rp=RidgeParams(base_sigma=bs,warp_sigma=float(args.warp_sigma),warp_amp=float(args.warp_amp),hessian_sigma=float(args.hessian_sigma),ridge_strength=float(args.ridge_strength),proto_q_hi=float(args.proto_q_hi),proto_q_lo=float(args.proto_q_lo),proto_close_iters=int(args.proto_close_iters),proto_open_iters=int(args.proto_open_iters),proto_min_component=int(args.proto_min_component),use_skeleton=bool(int(args.use_skeleton)),skeleton_prune_lmin=int(args.skeleton_prune_lmin),reconnect_close_iters=int(args.reconnect_close_iters),radius_mode=str(args.radius_mode),radius_jitter=float(args.radius_jitter),radius_smooth_sigma=float(args.radius_smooth_sigma),radius_scale_hint=float(args.radius_scale_hint),aniso_ratio=float(args.aniso_ratio))
     gp=GrayParams(write_gray=bool(int(args.write_gray)),solid_fill_sigma=args.solid_fill_sigma,marrow_mean=float(args.marrow_mean),bone_mean=float(args.bone_mean),noise_sd=float(args.noise_sd),bg_tex_sd=float(args.bg_tex_sd))
     sk01,si=make_proto_and_skeleton(shape=shape,rp=rp,rng=rng,skel_mode=str(args.skeleton_mode),fiji_exe=args.fiji_exe,fiji_cmd=str(args.fiji_command),dbg=dbg)
     bone01,ti=thicken_from_skeleton_radius_field(sk01,rng,bvtv,br,str(args.radius_mode),float(args.radius_jitter),float(args.radius_smooth_sigma),float(args.radius_scale_hint),dbg)
@@ -294,7 +308,7 @@ def build_parser():
     p.add_argument("--voi-preset",type=str,default=None,choices=list(VOI_PRESETS.keys()))
     p.add_argument("--bvtv",type=float,default=None); p.add_argument("--tbth-um",type=float,default=None); p.add_argument("--tbn-per-mm",type=float,default=None); p.add_argument("--tbsp-um",type=float,default=None)
     p.add_argument("--voxel-um",type=float,default=39.0); p.add_argument("--xy",type=int,default=None); p.add_argument("--z",type=int,default=None)
-    p.add_argument("--marrow-mean",type=float,default=50.0,help="Marrow/void intensity (real~50)"); p.add_argument("--bone-mean",type=float,default=110.0,help="Bone intensity (real~110)")
+    p.add_argument("--marrow-mean",type=float,default=20.0,help="Marrow intensity (real VOI1 ~20)"); p.add_argument("--bone-mean",type=float,default=60.0,help="Bone intensity (real VOI1 ~60)")
     p.add_argument("--noise-sd",type=float,default=4.0); p.add_argument("--bg-tex-sd",type=float,default=2.0)
     p.add_argument("--base-sigma",type=float,default=None); p.add_argument("--warp-sigma",type=float,default=14.0); p.add_argument("--warp-amp",type=float,default=4.8)
     p.add_argument("--hessian-sigma",type=float,default=1.4); p.add_argument("--ridge-strength",type=float,default=1.0)
@@ -305,6 +319,7 @@ def build_parser():
     p.add_argument("--skeleton-prune-lmin",type=int,default=8); p.add_argument("--reconnect-close-iters",type=int,default=3)
     p.add_argument("--radius-mode",type=str,default="branch",choices=["branch","voxel"]); p.add_argument("--radius-jitter",type=float,default=0.15)
     p.add_argument("--radius-smooth-sigma",type=float,default=3.0); p.add_argument("--radius-scale-hint",type=float,default=1.0)
+    p.add_argument("--aniso-ratio",type=float,default=2.5,help="Strut elongation: 1.0=blobs, 2-3=rods (real bone ~2.5)")
     p.add_argument("--enforce-lcc",type=int,default=1); p.add_argument("--min-component-size",type=int,default=500); p.add_argument("--round-sigma",type=float,default=0.7)
     p.add_argument("--solid-fill-sigma",type=float,default=None); p.add_argument("--write-gray",type=int,default=1); p.add_argument("--debug-skeleton",type=int,default=0)
     return p
