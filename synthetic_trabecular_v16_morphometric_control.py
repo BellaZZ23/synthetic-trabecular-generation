@@ -1,46 +1,46 @@
 #!/usr/bin/env python3
 r"""
-synthetic_trabecular_v15_morphometric_control.py
+synthetic_trabecular_v16_morphometric_control.py
 
-v15 (reworked): more connected, more realistic trabecular generator
-for ML datasets.
+v16: refined trabecular generator with useful changes retained from v14/v15.
 
-Key upgrades over the previous version:
-- multi-scale anisotropic field
-- rod + plate proto-network blending
-- stronger bridge-preserving morphology
-- less aggressive pruning by default
-- retry loop: generate several candidates and keep the most connected one
-- pooled-mode manual override fix for --bvtv / --tbth-um / --tbn-per-mm / --tbsp-um
+Key behavior:
+- multiscale anisotropic field
+- rod-dominant proto-network
+- optional very light plate contribution
+- smoother branch-based radius field
+- lighter connectivity forcing (to avoid foam / Voronoi appearance)
+- retry loop with safer connectivity scoring
+- explicit morphometric validation summary
 
-Usage (PowerShell):
-  python synthetic_trabecular_v15_morphometric_control.py `
+Suggested run:
+  python synthetic_trabecular_v16_morphometric_control.py `
       --voi-dirs data\derived\VOI1 data\derived\VOI4 `
-      --outdir output\ml_dataset --num-samples 20 `
-      --voi-preset voi1 --voxel-um 39 `
-      --solid-fill-sigma 3.0 --marrow-mean 50 --bone-mean 110 --base-seed 42
-
-Suggested connected setting:
-  python synthetic_trabecular_v15_morphometric_control.py `
-      --voi-dirs data\derived\VOI1 data\derived\VOI4 `
-      --outdir output\connected_v15 `
+      --outdir output\v16_refined `
       --num-samples 3 `
       --xy 256 --z 80 `
       --voxel-um 39 `
-      --base-sigma 5.2 `
-      --aniso-ratio 2.2 `
-      --warp-amp 2.0 `
-      --warp-sigma 16.0 `
-      --hessian-sigma 1.5 `
-      --proto-q-hi 0.87 `
-      --proto-q-lo 0.78 `
-      --proto-close-iters 4 `
-      --proto-min-component 150 `
-      --skeleton-prune-lmin 4 `
-      --reconnect-close-iters 5 `
-      --radius-jitter 0.08 `
-      --round-sigma 0.9 `
+      --bvtv 0.22 `
+      --tbth-um 180 `
+      --base-sigma 5.0 `
+      --aniso-ratio 1.8 `
+      --warp-amp 2.5 `
+      --warp-sigma 14.0 `
+      --hessian-sigma 1.4 `
+      --proto-q-hi 0.91 `
+      --proto-q-lo 0.84 `
+      --proto-close-iters 2 `
+      --proto-min-component 250 `
+      --skeleton-prune-lmin 6 `
+      --rod-weight 0.92 `
+      --plate-weight 0.08 `
+      --sheet-q 0.92 `
+      --radius-mode branch `
+      --radius-jitter 0.15 `
+      --radius-smooth-sigma 3.0 `
+      --round-sigma 0.8 `
       --retry-attempts 5 `
+      --marrow-mean 15 --bone-mean 200 `
       --debug-skeleton 1 `
       --base-seed 42
 """
@@ -124,9 +124,8 @@ def load_all_voi_targets(voi_dirs, voxel_um):
 
         c = voxel_um / max(1.0, rv)
 
-        # NOTE:
-        # If your *_targets.json values are already true microns, remove "* c * 2.0"
-        # or adjust accordingly. This preserves your previous convention.
+        # Preserves your prior convention.
+        # If the JSON is already in true microns, revisit these multipliers.
         th.append(float(t.get("TbTh_um_p90", t.get("TbTh_um_p50", 0))) * c * 2.0)
         sp.append(float(t.get("TbSp_um_p50", 0)) * c * 2.0)
 
@@ -233,32 +232,32 @@ class RidgeParams:
     hessian_sigma: float = 1.4
     ridge_strength: float = 1.0
 
-    proto_q_hi: float = 0.90
-    proto_q_lo: float = 0.80
-    proto_close_iters: int = 3
+    proto_q_hi: float = 0.91
+    proto_q_lo: float = 0.84
+    proto_close_iters: int = 2
     proto_open_iters: int = 0
-    proto_min_component: int = 150
+    proto_min_component: int = 250
 
     use_skeleton: bool = True
-    skeleton_prune_lmin: int = 4
-    reconnect_close_iters: int = 4
+    skeleton_prune_lmin: int = 6
+    reconnect_close_iters: int = 0
 
     radius_mode: str = "branch"
-    radius_jitter: float = 0.12
+    radius_jitter: float = 0.15
     radius_smooth_sigma: float = 3.0
     radius_scale_hint: float = 1.0
     prune_small_components: int = 0
 
-    aniso_ratio: float = 2.2
+    aniso_ratio: float = 1.8
 
-    rod_weight: float = 0.65
-    plate_weight: float = 0.35
+    rod_weight: float = 0.92
+    plate_weight: float = 0.08
     coarse_weight: float = 0.50
     medium_weight: float = 0.35
     fine_weight: float = 0.15
-    sheet_q: float = 0.78
-    bridge_dilate_iters: int = 1
-    bridge_close_iters: int = 2
+    sheet_q: float = 0.92
+    bridge_dilate_iters: int = 0
+    bridge_close_iters: int = 0
 
 
 @dataclass
@@ -459,7 +458,7 @@ def prune_short_end_branches(sk01, lmin):
     return sk.astype(np.uint8), {"prune_lmin": lmin, "vox_removed": rm}
 
 
-def dilate_erode_bridge(vol01, dilate_iters=1, close_iters=2):
+def dilate_erode_bridge(vol01, dilate_iters=0, close_iters=0):
     x = vol01.astype(bool)
     st = ndi.generate_binary_structure(3, 2)
     if int(dilate_iters) > 0:
@@ -512,11 +511,11 @@ def make_multiscale_anisotropic_field(
     return normalize(f)
 
 
-def plate_likeness_field(f, base_sigma, sheet_q=0.78):
+def plate_likeness_field(f, base_sigma, sheet_q=0.92):
     g1 = ndi.gaussian_filter(f, sigma=max(0.8, base_sigma * 0.8))
     g2 = ndi.gaussian_filter(f, sigma=max(0.8, base_sigma * 1.4))
     p = normalize(0.65 * g1 + 0.35 * g2)
-    th = float(np.quantile(p, float(np.clip(sheet_q, 0.55, 0.95))))
+    th = float(np.quantile(p, float(np.clip(sheet_q, 0.55, 0.98))))
     return (p >= th).astype(np.float32)
 
 
@@ -552,16 +551,17 @@ def make_proto_and_skeleton(shape, rp, rng, skel_mode, fiji_exe, fiji_cmd, dbg):
     rod_R = vesselness_ridge(f, sigma=float(rp.hessian_sigma))
     rod_R = np.clip(rod_R * float(rp.ridge_strength), 0.0, 1.0)
 
-    plate_R = plate_likeness_field(
-        f,
-        base_sigma=float(rp.base_sigma),
-        sheet_q=float(rp.sheet_q),
-    )
-
-    rw = float(rp.rod_weight)
-    pw = float(rp.plate_weight)
-    R = rw * rod_R + pw * plate_R
-    R = np.clip(R, 0.0, 1.0)
+    if float(rp.plate_weight) <= 0:
+        plate_R = np.zeros_like(rod_R, dtype=np.float32)
+        R = rod_R
+    else:
+        plate_R = plate_likeness_field(
+            f,
+            base_sigma=float(rp.base_sigma),
+            sheet_q=float(rp.sheet_q),
+        )
+        R = float(rp.rod_weight) * rod_R + float(rp.plate_weight) * plate_R
+        R = np.clip(R, 0.0, 1.0)
 
     p01, hy = hysteresis_on_response(R, float(rp.proto_q_lo), float(rp.proto_q_hi))
     p01 = morph_iters(p01, "close", int(rp.proto_close_iters))
@@ -573,10 +573,6 @@ def make_proto_and_skeleton(shape, rp, rng, skel_mode, fiji_exe, fiji_cmd, dbg):
     )
     p01 = remove_small_components(p01, int(rp.proto_min_component))
 
-    st26 = ndi.generate_binary_structure(3, 2)
-    if p01.astype(bool).sum() > 0:
-        p01 = ndi.binary_closing(p01.astype(bool), structure=st26, iterations=1).astype(np.uint8)
-
     sr = p01.copy().astype(np.uint8)
     used_skeleton = False
 
@@ -587,11 +583,10 @@ def make_proto_and_skeleton(shape, rp, rng, skel_mode, fiji_exe, fiji_cmd, dbg):
 
     sp, pi = prune_short_end_branches(sr, lmin=int(rp.skeleton_prune_lmin))
 
+    # Optional and very light; off by default.
     if int(rp.reconnect_close_iters) > 0:
         sp = morph_iters(sp, "close", int(rp.reconnect_close_iters))
-
-    if bool(rp.use_skeleton):
-        if skel_mode == "skimage":
+        if bool(rp.use_skeleton) and skel_mode == "skimage":
             sp = skeletonize_with_skimage(sp)
 
     if dbg:
@@ -610,8 +605,8 @@ def make_proto_and_skeleton(shape, rp, rng, skel_mode, fiji_exe, fiji_cmd, dbg):
         "used_skeleton": used_skeleton,
         "skel_mode": skel_mode,
         "prune": pi,
-        "rod_weight": rw,
-        "plate_weight": pw,
+        "rod_weight": float(rp.rod_weight),
+        "plate_weight": float(rp.plate_weight),
     }
 
 
@@ -674,12 +669,18 @@ def thicken_from_skeleton_radius_field(sk01, rng, tbvtv, br, rm, rj, rss, rsh, d
             hi = mid
 
     bone = (dist <= (bs * rf)).astype(np.uint8)
+
+    if dbg is not None:
+        rfv = rf / (rf.max() + 1e-6)
+        save_tif_u8((rfv * 255).astype(np.uint8), dbg / "radius_field_u8.tif")
+
     return bone, {
         "base_r": float(br),
         "min_r": float(mr),
         "scale": float(bs),
         "bvtv_tgt": float(tgt),
         "bvtv_got": float(bone.mean()),
+        "warn_target_miss": bool(abs(float(bone.mean()) - tgt) > 0.10),
     }
 
 
@@ -774,16 +775,27 @@ def skeleton_graph_stats(sk01):
 def connectivity_score(sk01, bone01=None):
     sg = skeleton_graph_stats(sk01)
     ej = sg["ej_ratio"] if sg["ej_ratio"] is not None else 999.0
-    score = 0.0
 
-    score += 2.0 * float(sg["junctions"])
-    score -= 1.0 * float(sg["endpoints"])
-    score -= 50.0 * float(ej)
+    jn = float(sg["junctions"])
+    ep = float(sg["endpoints"])
+
+    score = 0.0
+    score += 2000.0 * np.tanh(jn / 4000.0)
+    score -= 200.0 * np.tanh(ep / 2000.0)
+    score -= 100.0 * min(float(ej), 10.0)
 
     if bone01 is not None:
         cs = component_stats_3d(bone01)
-        score += 200.0 * float(cs["lcc_frac"])
-        score -= 10.0 * max(0, cs["n_components"] - 1)
+        lcc = float(cs["lcc_frac"])
+        ncomp = int(cs["n_components"])
+
+        score += 300.0 * lcc
+        score -= 20.0 * max(0, ncomp - 1)
+
+        morph = measure_all_morphometrics(bone01, 1.0)
+        eu = float(morph["Euler"])
+        if eu < -5000:
+            score -= 300.0 * np.tanh(abs(eu) / 10000.0)
 
     return {
         "score": float(score),
@@ -809,10 +821,16 @@ def validate_morphometrics(m, t):
                 "measured": float(mv),
                 "target": float(tv),
                 "rel_error": re,
+                "tolerance": float(tol),
                 "pass": bool(re <= tol),
             }
+
     lcc = m.get("lcc_frac", 0.0)
-    ch["LCC"] = {"lcc_frac": float(lcc), "pass": bool(lcc >= 0.80)}
+    ch["Connectivity (LCC)"] = {
+        "lcc_frac": float(lcc),
+        "n_components": int(m.get("n_components", -1)),
+        "pass": bool(lcc >= 0.80),
+    }
     return ch
 
 
@@ -902,7 +920,6 @@ def generate_one(params, args, outdir, label="", seed_override=None):
     for k in range(n_tries):
         seed = int(base_seed) + k
         rng = np.random.default_rng(seed)
-
         try_dbg = (dbg / f"try_{k:02d}") if dbg else None
 
         sk01, si = make_proto_and_skeleton(
@@ -924,7 +941,7 @@ def generate_one(params, args, outdir, label="", seed_override=None):
             float(args.radius_jitter),
             float(args.radius_smooth_sigma),
             float(args.radius_scale_hint),
-            dbg=None,
+            dbg=try_dbg,
         )
 
         bone01 = anti_block_round(bone01, float(args.round_sigma))
@@ -983,7 +1000,7 @@ def generate_one(params, args, outdir, label="", seed_override=None):
     tw = check_tamimi_bounds(morph)
 
     met = {
-        "version": "v15_reworked_connected",
+        "version": "v16",
         "label": label,
         "seed": seed,
         "best_connectivity_score": best_score,
@@ -1000,6 +1017,7 @@ def generate_one(params, args, outdir, label="", seed_override=None):
             "ridge": asdict(rp),
             "gray": asdict(gp),
             "retry_attempts": n_tries,
+            "round_sigma": float(args.round_sigma),
         },
         "shape_zyx": list(shape),
         "voxel_um": vu,
@@ -1009,15 +1027,12 @@ def generate_one(params, args, outdir, label="", seed_override=None):
     print(f"    chosen seed={seed} after {n_tries} tries")
     print(f"    connectivity score={best_score:.2f}  junctions={conn['junctions']} endpoints={conn['endpoints']} ej={conn['ej_ratio']}")
     print(f"    BV/TV: target={bvtv:.3f} measured={morph['BVTV']:.3f}")
-    if tw:
-        for w in tw:
-            print(f"    ! {w}")
 
     return met
 
 
 def build_parser():
-    p = argparse.ArgumentParser(description="v15 trabecular generator (reworked for more connected, realistic structure)")
+    p = argparse.ArgumentParser(description="v16 trabecular generator")
 
     p.add_argument("--voi-dirs", nargs="+", type=str, default=None)
     p.add_argument("--targets-json", type=str, default=None)
@@ -1038,8 +1053,8 @@ def build_parser():
     p.add_argument("--xy", type=int, default=None)
     p.add_argument("--z", type=int, default=None)
 
-    p.add_argument("--marrow-mean", type=float, default=20.0, help="Marrow intensity")
-    p.add_argument("--bone-mean", type=float, default=60.0, help="Bone intensity")
+    p.add_argument("--marrow-mean", type=float, default=20.0)
+    p.add_argument("--bone-mean", type=float, default=60.0)
     p.add_argument("--noise-sd", type=float, default=4.0)
     p.add_argument("--bg-tex-sd", type=float, default=2.0)
 
@@ -1049,46 +1064,61 @@ def build_parser():
     p.add_argument("--hessian-sigma", type=float, default=1.4)
     p.add_argument("--ridge-strength", type=float, default=1.0)
 
-    p.add_argument("--proto-q-hi", type=float, default=0.90)
-    p.add_argument("--proto-q-lo", type=float, default=0.80)
-    p.add_argument("--proto-close-iters", type=int, default=3)
+    p.add_argument("--proto-q-hi", type=float, default=0.91)
+    p.add_argument("--proto-q-lo", type=float, default=0.84)
+    p.add_argument("--proto-close-iters", type=int, default=2)
     p.add_argument("--proto-open-iters", type=int, default=0)
-    p.add_argument("--proto-min-component", type=int, default=150)
+    p.add_argument("--proto-min-component", type=int, default=250)
 
     p.add_argument("--use-skeleton", type=int, default=1)
     p.add_argument("--skeleton-mode", type=str, default="skimage", choices=["skimage", "fiji"])
     p.add_argument("--fiji-exe", type=str, default=None)
     p.add_argument("--fiji-command", type=str, default="Skeletonize (2D/3D)")
-    p.add_argument("--skeleton-prune-lmin", type=int, default=4)
-    p.add_argument("--reconnect-close-iters", type=int, default=4)
+    p.add_argument("--skeleton-prune-lmin", type=int, default=6)
+    p.add_argument("--reconnect-close-iters", type=int, default=0)
 
     p.add_argument("--radius-mode", type=str, default="branch", choices=["branch", "voxel"])
-    p.add_argument("--radius-jitter", type=float, default=0.12)
+    p.add_argument("--radius-jitter", type=float, default=0.15)
     p.add_argument("--radius-smooth-sigma", type=float, default=3.0)
     p.add_argument("--radius-scale-hint", type=float, default=1.0)
 
-    p.add_argument("--aniso-ratio", type=float, default=2.2, help="1.0=blobby, 2-3=rod-like")
-    p.add_argument("--rod-weight", type=float, default=0.65)
-    p.add_argument("--plate-weight", type=float, default=0.35)
+    p.add_argument("--aniso-ratio", type=float, default=1.8)
+    p.add_argument("--rod-weight", type=float, default=0.92)
+    p.add_argument("--plate-weight", type=float, default=0.08)
     p.add_argument("--coarse-weight", type=float, default=0.50)
     p.add_argument("--medium-weight", type=float, default=0.35)
     p.add_argument("--fine-weight", type=float, default=0.15)
-    p.add_argument("--sheet-q", type=float, default=0.78)
-    p.add_argument("--bridge-dilate-iters", type=int, default=1)
-    p.add_argument("--bridge-close-iters", type=int, default=2)
+    p.add_argument("--sheet-q", type=float, default=0.92)
+    p.add_argument("--bridge-dilate-iters", type=int, default=0)
+    p.add_argument("--bridge-close-iters", type=int, default=0)
 
     p.add_argument("--enforce-lcc", type=int, default=1)
     p.add_argument("--min-component-size", type=int, default=500)
-    p.add_argument("--round-sigma", type=float, default=0.7)
+    p.add_argument("--round-sigma", type=float, default=0.8)
 
     p.add_argument("--solid-fill-sigma", type=float, default=None)
     p.add_argument("--write-gray", type=int, default=1)
     p.add_argument("--debug-skeleton", type=int, default=0)
 
-    p.add_argument("--retry-attempts", type=int, default=4,
-                   help="Generate several candidates and keep the most connected one")
+    p.add_argument("--retry-attempts", type=int, default=4)
 
     return p
+
+
+def print_validation_summary(validation):
+    print(f"\n{'=' * 58}")
+    print("  MORPHOMETRIC VALIDATION SUMMARY")
+    print(f"{'=' * 58}")
+    print(f"  {'Metric':<22} {'Target':>9} {'Measured':>10} {'Error':>7} {'':>5}")
+    print(f"  {'-' * 56}")
+    for label, chk in validation.items():
+        if label == "Connectivity (LCC)":
+            status = "PASS" if chk["pass"] else "FAIL <<"
+            print(f"  {'Connectivity (LCC)':<22} {'>=0.80':>9} {chk['lcc_frac']:>10.3f} {'—':>7}  {status}")
+        else:
+            status = "PASS" if chk["pass"] else "FAIL <<"
+            print(f"  {label:<22} {chk['target']:>9.2f} {chk['measured']:>10.2f} {chk['rel_error']:>6.1%}  {status}")
+    print(f"{'=' * 58}")
 
 
 def main():
@@ -1111,16 +1141,27 @@ def main():
         prng = np.random.default_rng(int(args.base_seed))
         samples = sample_targets_from_pool(pooled, prng, int(args.num_samples))
 
-        # Manual override fix in pooled mode
         for s in samples:
-            if args.bvtv is not None:
+            bvtv_over = args.bvtv is not None
+            tbth_over = args.tbth_um is not None
+            tbn_over = args.tbn_per_mm is not None
+            tbsp_over = args.tbsp_um is not None
+
+            if bvtv_over:
                 s["bvtv"] = float(args.bvtv)
-            if args.tbth_um is not None:
+            if tbth_over:
                 s["tbth_um"] = float(args.tbth_um)
-            if args.tbn_per_mm is not None:
-                s["tbn_per_mm"] = float(args.tbn_per_mm)
-            if args.tbsp_um is not None:
+            if tbsp_over:
                 s["tbsp_um"] = float(args.tbsp_um)
+
+            if tbn_over:
+                s["tbn_per_mm"] = float(args.tbn_per_mm)
+            elif bvtv_over or tbth_over:
+                s["tbn_per_mm"] = float(np.clip(
+                    float(s["bvtv"]) / (float(s["tbth_um"]) / 1000.0),
+                    0.5,
+                    4.0
+                ))
 
         print(f"\n  Sampled {len(samples)} targets:")
         for s in samples:
@@ -1132,18 +1173,24 @@ def main():
             s["shape_z"] = args.z or 160
             s["shape_xy"] = args.xy or 300
 
-            all_metrics.append(
-                generate_one(
-                    s,
-                    args,
-                    Path(args.outdir) / f"sample_{s['sample_index']:03d}",
-                    label=f"sample_{s['sample_index']:03d}",
-                    seed_override=int(args.base_seed) + s["sample_index"] + 1,
-                )
+            m = generate_one(
+                s,
+                args,
+                Path(args.outdir) / f"sample_{s['sample_index']:03d}",
+                label=f"sample_{s['sample_index']:03d}",
+                seed_override=int(args.base_seed) + s["sample_index"] + 1,
             )
+            all_metrics.append(m)
+            print_validation_summary(m["validation"])
+
+            if m["thick_info"].get("warn_target_miss", False):
+                print(
+                    f"\nWarning: BV/TV target {m['targets']['bvtv_target']:.3f} not closely reached "
+                    f"(got {m['thick_info'].get('bvtv_got', -1):.3f})."
+                )
 
         save_json({
-            "version": "v15_reworked_connected",
+            "version": "v16",
             "n": len(all_metrics),
             "pooled": pooled,
             "gray": {"marrow": args.marrow_mean, "bone": args.bone_mean},
@@ -1164,7 +1211,14 @@ def main():
     elif args.targets_json is not None:
         voi = load_voi_targets(args.targets_json)
         params = extract_single_params(voi, args)
-        generate_one(params, args, Path(args.outdir), label="single")
+        m = generate_one(params, args, Path(args.outdir), label="single")
+        print_validation_summary(m["validation"])
+
+        if m["thick_info"].get("warn_target_miss", False):
+            print(
+                f"\nWarning: BV/TV target {m['targets']['bvtv_target']:.3f} not closely reached "
+                f"(got {m['thick_info'].get('bvtv_got', -1):.3f})."
+            )
 
     elif args.profile is not None:
         ref = TAMIMI_HF if args.profile == "tamimi-hf" else TAMIMI_HOA
@@ -1178,7 +1232,14 @@ def main():
             "shape_z": args.z or 160,
             "shape_xy": args.xy or 300,
         }
-        generate_one(params, args, Path(args.outdir), label="literature")
+        m = generate_one(params, args, Path(args.outdir), label="literature")
+        print_validation_summary(m["validation"])
+
+        if m["thick_info"].get("warn_target_miss", False):
+            print(
+                f"\nWarning: BV/TV target {m['targets']['bvtv_target']:.3f} not closely reached "
+                f"(got {m['thick_info'].get('bvtv_got', -1):.3f})."
+            )
 
     else:
         print("Provide: --voi-dirs, --targets-json, or --profile")
