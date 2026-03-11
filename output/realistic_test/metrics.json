@@ -1,0 +1,107 @@
+{
+  "version": "v15",
+  "label": "literature",
+  "seed": 42,
+  "morphometrics": {
+    "BVTV": 0.20296382904052734,
+    "TbTh_um_p50": 110.30865786510142,
+    "TbTh_um_p90": 220.61731573020285,
+    "TbSp_um_p50": 234.0,
+    "TbSp_um_p90": 493.3153149862672,
+    "TbN_per_mm": 1.6081765826561678,
+    "Euler": -1129.0,
+    "ConnProxy": 1130.0,
+    "n_components": 1,
+    "lcc_frac": 1.0
+  },
+  "targets": {
+    "bvtv_target": 0.2037,
+    "tbth_um_target": 180.0,
+    "tbn_target": 1.5,
+    "tbsp_um_target": 580.0
+  },
+  "validation": {
+    "BV/TV": {
+      "measured": 0.20296382904052734,
+      "target": 0.2037,
+      "rel_error": 0.003613995873699796,
+      "pass": true
+    },
+    "Tb.Th": {
+      "measured": 110.30865786510142,
+      "target": 180.0,
+      "rel_error": 0.38717412297165876,
+      "pass": false
+    },
+    "Tb.N": {
+      "measured": 1.6081765826561678,
+      "target": 1.5,
+      "rel_error": 0.07211772177077853,
+      "pass": true
+    },
+    "Tb.Sp": {
+      "measured": 234.0,
+      "target": 580.0,
+      "rel_error": 0.596551724137931,
+      "pass": false
+    },
+    "LCC": {
+      "lcc_frac": 1.0,
+      "pass": true
+    }
+  },
+  "tamimi_warnings": [],
+  "skeleton_stats": {
+    "skel_voxels": 118416,
+    "junctions": 101012,
+    "endpoints": 4847,
+    "ej_ratio": 0.047984397893319604
+  },
+  "thick_info": {
+    "base_r": 2.3076923076923075,
+    "min_r": 0.6923076923076922,
+    "scale": 1.1190199553966522,
+    "bvtv_tgt": 0.2037,
+    "bvtv_got": 0.2036996841430664
+  },
+  "params": {
+    "ridge": {
+      "base_sigma": 6.0,
+      "warp_sigma": 14.0,
+      "warp_amp": 3.0,
+      "hessian_sigma": 1.8,
+      "ridge_strength": 1.0,
+      "proto_q_hi": 0.9,
+      "proto_q_lo": 0.82,
+      "proto_close_iters": 3,
+      "proto_open_iters": 0,
+      "proto_min_component": 400,
+      "use_skeleton": true,
+      "skeleton_prune_lmin": 8,
+      "reconnect_close_iters": 4,
+      "radius_mode": "branch",
+      "radius_jitter": 0.15,
+      "radius_smooth_sigma": 3.0,
+      "radius_scale_hint": 1.0,
+      "prune_small_components": 0,
+      "aniso_ratio": 3.5
+    },
+    "gray": {
+      "write_gray": true,
+      "marrow_mean": 15.0,
+      "bone_mean": 200.0,
+      "solid_fill_sigma": 1.5,
+      "pve_sigma": 0.5,
+      "noise_sd": 4.0,
+      "bg_tex_sd": 2.0,
+      "unsharp": 0.6,
+      "unsharp_sigma": 0.8
+    }
+  },
+  "shape_zyx": [
+    80,
+    256,
+    256
+  ],
+  "voxel_um": 39.0
+}
