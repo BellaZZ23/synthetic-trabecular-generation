@@ -1,0 +1,17 @@
+{
+  "best_params": {
+    "bvtv": 0.22,
+    "tbth_um": 180.0,
+    "base_sigma": 5.0,
+    "aniso_ratio": 3.0,
+    "warp_amp": 3.0,
+    "hessian_sigma": 1.4,
+    "proto_q_hi": 0.92,
+    "proto_q_lo": 0.84,
+    "proto_close_iters": 2,
+    "radius_jitter": 0.15,
+    "round_sigma": 0.7,
+    "rod_weight": 1.0,
+    "plate_weight": 0.0
+  }
+}
