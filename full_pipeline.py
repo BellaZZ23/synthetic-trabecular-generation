@@ -299,8 +299,8 @@ def generate_dataset(best_params, args, outdir):
 
         # Per-sample variation: different morphometrics for each sample
         rng_sample = np.random.default_rng(seed + 99999)
-        bvtv = float(np.clip(rng_sample.normal(bvtv_centre, 0.04), 0.15, 0.30))
-        tbth = float(np.clip(rng_sample.normal(tbth_centre, 25.0), 130.0, 240.0))
+        bvtv = float(np.clip(rng_sample.normal(bvtv_centre, 0.06), 0.12, 0.32))  # FIX2: wider spread
+        tbth = float(np.clip(rng_sample.normal(tbth_centre, 30.0), 110.0, 260.0))  # FIX2: wider spread
         tbn = bvtv / (tbth / 1000.0)
         br = tbth_um_to_radius_vox(tbth, voxel_um)
         bs = max(bs_base, 4.5)  # prevent too-fine networks
