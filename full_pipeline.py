@@ -126,7 +126,7 @@ def generate_small_and_score(params, ref_image, voxel_um=39.0, shape=(40,128,128
     br = tbth_um_to_radius_vox(tbth, voxel_um)
 
     rp_kw = dict(
-        base_sigma=params["base_sigma"], warp_sigma=14.0, warp_amp=params["warp_amp"],
+        base_sigma=max(params["base_sigma"], 4.5), warp_sigma=14.0, warp_amp=params["warp_amp"],
         hessian_sigma=params["hessian_sigma"], ridge_strength=1.0,
         proto_q_hi=params["proto_q_hi"], proto_q_lo=params["proto_q_lo"],
         proto_close_iters=params["proto_close_iters"], proto_open_iters=0,
@@ -282,12 +282,11 @@ def generate_dataset(best_params, args, outdir):
     dataset_dir.mkdir(parents=True, exist_ok=True)
 
     voxel_um = float(args.voxel_um)
-    bvtv = float(best_params.get("bvtv", 0.22))
-    tbth = float(best_params.get("tbth_um", 180.0))
-    tbn = bvtv / (tbth / 1000.0)
+    # Centre values from best_params, but vary per sample
+    bvtv_centre = float(best_params.get("bvtv", 0.22))
+    tbth_centre = float(best_params.get("tbth_um", 180.0))
+    bs_base = float(best_params.get("base_sigma", 5.0))
     shape = (args.z, args.xy, args.xy)
-    br = tbth_um_to_radius_vox(tbth, voxel_um)
-    bs = float(best_params.get("base_sigma", 5.0))
 
     all_metrics = []
     t0 = time.time()
@@ -298,20 +297,28 @@ def generate_dataset(best_params, args, outdir):
         sample_dir = dataset_dir / f"sample_{i:03d}"
         sample_dir.mkdir(parents=True, exist_ok=True)
 
+        # Per-sample variation: different morphometrics for each sample
+        rng_sample = np.random.default_rng(seed + 99999)
+        bvtv = float(np.clip(rng_sample.normal(bvtv_centre, 0.04), 0.15, 0.30))
+        tbth = float(np.clip(rng_sample.normal(tbth_centre, 25.0), 130.0, 240.0))
+        tbn = bvtv / (tbth / 1000.0)
+        br = tbth_um_to_radius_vox(tbth, voxel_um)
+        bs = max(bs_base, 4.5)  # prevent too-fine networks
+
         rp_kw = dict(
             base_sigma=bs, warp_sigma=14.0,
-            warp_amp=float(best_params.get("warp_amp", 2.0)),
+            warp_amp=float(best_params.get("warp_amp", 3.0)),
             hessian_sigma=float(best_params.get("hessian_sigma", 1.4)),
             ridge_strength=1.0,
-            proto_q_hi=float(best_params.get("proto_q_hi", 0.91)),
+            proto_q_hi=float(best_params.get("proto_q_hi", 0.92)),
             proto_q_lo=float(best_params.get("proto_q_lo", 0.84)),
             proto_close_iters=int(best_params.get("proto_close_iters", 2)),
-            proto_open_iters=0, proto_min_component=250,
-            use_skeleton=True, skeleton_prune_lmin=6, reconnect_close_iters=0,
+            proto_open_iters=0, proto_min_component=400,
+            use_skeleton=True, skeleton_prune_lmin=8, reconnect_close_iters=3,
             radius_mode="branch",
             radius_jitter=float(best_params.get("radius_jitter", 0.15)),
             radius_smooth_sigma=3.0, radius_scale_hint=1.0, prune_small_components=0,
-            aniso_ratio=float(best_params.get("aniso_ratio", 1.8)),
+            aniso_ratio=float(best_params.get("aniso_ratio", 3.0)),
         )
         if GENERATOR_VERSION == "v16":
             rp_kw.update(dict(
@@ -634,12 +641,12 @@ def main():
         print(f"\n  Loaded pre-computed params from {args.params_json}")
     elif args.skip_optimize:
         best_params = {"bvtv": 0.22, "tbth_um": 180.0, "base_sigma": 5.0,
-                       "aniso_ratio": 1.8, "warp_amp": 2.5, "hessian_sigma": 1.4,
-                       "proto_q_hi": 0.91, "proto_q_lo": 0.84, "proto_close_iters": 2,
-                       "radius_jitter": 0.15, "round_sigma": 0.8,
-                       "rod_weight": 0.92, "plate_weight": 0.08}
+                       "aniso_ratio": 3.0, "warp_amp": 3.0, "hessian_sigma": 1.4,
+                       "proto_q_hi": 0.92, "proto_q_lo": 0.84, "proto_close_iters": 2,
+                       "radius_jitter": 0.15, "round_sigma": 0.7,
+                       "rod_weight": 1.0, "plate_weight": 0.0}
         opt_result = {"best_loss": None, "best_params": best_params}
-        print(f"\n  Skipping optimization, using defaults")
+        print(f"\n  Skipping optimization, using v15 proven defaults")
     else:
         best_params, importances = run_optimization(args.reference_image, args.optimize_trials, outdir)
         opt_result = {"best_loss": None, "best_params": best_params}

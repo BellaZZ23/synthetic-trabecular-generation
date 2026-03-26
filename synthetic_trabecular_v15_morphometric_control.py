@@ -63,7 +63,7 @@ def sample_targets_from_pool(pooled, rng, n):
     for i in range(n):
         def s(k,lo,hi):
             v = pooled[k]; return float(np.clip(rng.normal(v["mean"],max(v["std"],v["mean"]*0.05)),lo,hi))
-        bvtv=s("BVTV",0.10,0.45); tbth=s("TbTh_um",100,280); tbsp=s("TbSp_um",200,900)
+        bvtv=s("BVTV",0.15,0.30); tbth=s("TbTh_um",130,240); tbsp=s("TbSp_um",200,700)
         tbn=float(np.clip(bvtv/(tbth/1000.0),0.5,4.0))
         samples.append({"bvtv":bvtv,"tbth_um":tbth,"tbn_per_mm":tbn,"tbsp_um":tbsp,"sample_index":i})
     return samples
@@ -274,6 +274,7 @@ def generate_one(params,args,outdir,label="",seed_override=None):
     vu=params.get("voxel_um",float(args.voxel_um or 39.0))
     shape=(params.get("shape_z",args.z or 160),params.get("shape_xy",args.xy or 300),params.get("shape_xy",args.xy or 300))
     br=tbth_um_to_radius_vox(tbth,vu); bs=float(args.base_sigma) if args.base_sigma is not None else tbn_per_mm_to_base_sigma(tbn,vu)
+    bs=max(bs, 4.5)  # prevent too-fine networks that produce unresolvable thin struts
     print(f"\n  [{label}] seed={seed}")
     print(f"    BV/TV={bvtv:.3f} Tb.Th={tbth:.0f}um Tb.N={tbn:.2f}/mm sigma={bs:.2f} radius={br:.2f} shape={shape}")
     outdir.mkdir(parents=True,exist_ok=True)
