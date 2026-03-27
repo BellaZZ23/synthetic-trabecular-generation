@@ -94,6 +94,11 @@ except ImportError:
 
 LABEL_KEYS = ["BVTV", "TbTh_um_p50", "TbN_per_mm", "TbSp_um_p50"]
 
+# ── Validation gate thresholds ──
+GATE_BVTV_REL_ERR  = 0.15   # reject if |measured - target| / target > 15%
+GATE_LCC_MIN       = 0.85   # reject if largest connected component < 85% of bone
+GATE_MAX_ATTEMPTS  = 8      # resample up to 8 times before skipping
+
 
 # ═══════════════════════════════════════════════════════════
 #  STEP 1: OPTIMIZE
@@ -219,7 +224,6 @@ def run_optimization(ref_path, n_trials, outdir):
     print(f"\n  Optimization done in {elapsed:.0f}s ({elapsed/n_trials:.1f}s/trial)")
     print(f"  Best loss: {study.best_value:.4f}")
 
-    # Importance
     importances = {}
     try:
         importances = get_param_importances(study)
@@ -229,7 +233,6 @@ def run_optimization(ref_path, n_trials, outdir):
     except Exception:
         pass
 
-    # Save importance plot
     if importances:
         names = list(importances.keys())
         vals = list(importances.values())
@@ -241,7 +244,6 @@ def run_optimization(ref_path, n_trials, outdir):
         for i,v in enumerate(vals): ax.text(v+0.005, i, f"{v:.3f}", va="center", fontsize=9)
         plt.tight_layout(); plt.savefig(outdir/"importance_plot.png", dpi=150); plt.close()
 
-    # Convergence plot
     tv = [t.value for t in study.trials if t.value is not None]
     fig, ax = plt.subplots(figsize=(10,5))
     ax.plot(tv, "o", alpha=0.3, ms=4, label="Trial loss")
@@ -249,7 +251,6 @@ def run_optimization(ref_path, n_trials, outdir):
     ax.set_xlabel("Trial"); ax.set_ylabel("Loss"); ax.set_title("Optimization Convergence")
     ax.legend(); plt.tight_layout(); plt.savefig(outdir/"convergence_plot.png", dpi=150); plt.close()
 
-    # Save
     opt_result = {
         "best_loss": float(study.best_value), "best_params": best,
         "importances": {k: float(v) for k,v in importances.items()} if importances else {},
@@ -258,7 +259,6 @@ def run_optimization(ref_path, n_trials, outdir):
     with open(outdir/"optimization_result.json", "w") as f:
         json.dump(opt_result, f, indent=2, default=str)
 
-    # Trial CSV
     if trial_log:
         with open(outdir/"optimization_trials.csv", "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=trial_log[0].keys(), extrasaction="ignore")
@@ -272,110 +272,192 @@ def run_optimization(ref_path, n_trials, outdir):
 #  STEP 2: GENERATE DATASET
 # ═══════════════════════════════════════════════════════════
 
+def _validate_sample(bone01: np.ndarray, morph: dict, bvtv_target: float) -> tuple[bool, str]:
+    """
+    Validation gate: returns (passed, reason_if_failed).
+    Checks BV/TV error, LCC fraction. Called after every generation attempt.
+    """
+    bvtv_measured = morph.get("BVTV", 0.0)
+    lcc_frac      = morph.get("lcc_frac", 0.0)
+
+    # Check 1: BV/TV must be within 15% of target
+    if bvtv_target > 0:
+        rel_err = abs(bvtv_measured - bvtv_target) / bvtv_target
+        if rel_err > GATE_BVTV_REL_ERR:
+            return False, (f"BV/TV error {rel_err*100:.1f}% > {GATE_BVTV_REL_ERR*100:.0f}% "
+                           f"(measured={bvtv_measured:.3f}, target={bvtv_target:.3f})")
+
+    # Check 2: largest connected component must dominate
+    if lcc_frac < GATE_LCC_MIN:
+        return False, f"LCC={lcc_frac:.3f} < {GATE_LCC_MIN} (fragmented network)"
+
+    # Check 3: volume must not be nearly empty or nearly full
+    if bvtv_measured < 0.05:
+        return False, f"BV/TV={bvtv_measured:.3f} near zero (skeleton collapsed)"
+    if bvtv_measured > 0.60:
+        return False, f"BV/TV={bvtv_measured:.3f} near one (over-thickened blob)"
+
+    return True, ""
+
+
+def _build_rp_kw(best_params: dict, bs: float) -> dict:
+    """Shared RidgeParams kwargs builder."""
+    rp_kw = dict(
+        base_sigma=bs, warp_sigma=14.0,
+        warp_amp=float(best_params.get("warp_amp", 3.0)),
+        hessian_sigma=float(best_params.get("hessian_sigma", 1.4)),
+        ridge_strength=1.0,
+        proto_q_hi=float(best_params.get("proto_q_hi", 0.92)),
+        proto_q_lo=float(best_params.get("proto_q_lo", 0.84)),
+        proto_close_iters=int(best_params.get("proto_close_iters", 2)),
+        proto_open_iters=0, proto_min_component=400,
+        use_skeleton=True, skeleton_prune_lmin=8, reconnect_close_iters=3,
+        radius_mode="branch",
+        radius_jitter=float(best_params.get("radius_jitter", 0.15)),
+        radius_smooth_sigma=3.0, radius_scale_hint=1.0, prune_small_components=0,
+        aniso_ratio=float(best_params.get("aniso_ratio", 3.0)),
+    )
+    if GENERATOR_VERSION == "v16":
+        rp_kw.update(dict(
+            rod_weight=float(best_params.get("rod_weight", 0.92)),
+            plate_weight=float(best_params.get("plate_weight", 0.08)),
+            coarse_weight=0.50, medium_weight=0.35, fine_weight=0.15,
+            sheet_q=0.92, bridge_dilate_iters=0, bridge_close_iters=0,
+        ))
+    return rp_kw
+
+
 def generate_dataset(best_params, args, outdir):
-    """Step 2: Generate N samples with optimal parameters."""
+    """Step 2: Generate N samples with optimal parameters + validation gate."""
     print(f"\n{'='*60}")
     print(f"  STEP 2: GENERATE {args.num_samples} SAMPLES ({args.xy}x{args.xy}x{args.z})")
+    print(f"  Validation gate: BV/TV error <{GATE_BVTV_REL_ERR*100:.0f}%, "
+          f"LCC >{GATE_LCC_MIN}, max {GATE_MAX_ATTEMPTS} attempts/sample")
     print(f"{'='*60}")
 
     dataset_dir = outdir / "dataset"
     dataset_dir.mkdir(parents=True, exist_ok=True)
 
-    voxel_um = float(args.voxel_um)
-    # Centre values from best_params, but vary per sample
-    bvtv_centre = float(best_params.get("bvtv", 0.22))
-    tbth_centre = float(best_params.get("tbth_um", 180.0))
-    bs_base = float(best_params.get("base_sigma", 5.0))
-    shape = (args.z, args.xy, args.xy)
+    voxel_um     = float(args.voxel_um)
+    bvtv_centre  = float(best_params.get("bvtv", 0.22))
+    tbth_centre  = float(best_params.get("tbth_um", 180.0))
+    bs_base      = float(best_params.get("base_sigma", 5.0))
+    shape        = (args.z, args.xy, args.xy)
 
-    all_metrics = []
-    t0 = time.time()
+    all_metrics  = []
+    n_skipped    = 0
+    n_retries    = 0
+    t0           = time.time()
+
+    gp = GrayParams(write_gray=True, solid_fill_sigma=3.0, marrow_mean=15.0,
+                    bone_mean=240.0, noise_sd=3.0, bg_tex_sd=1.0)
 
     for i in range(args.num_samples):
-        seed = args.seed + i + 1
-        rng = np.random.default_rng(seed)
-        sample_dir = dataset_dir / f"sample_{i:03d}"
+        base_seed   = args.seed + i + 1
+        rng_sample  = np.random.default_rng(base_seed + 99999)
+        bvtv_target = float(np.clip(rng_sample.normal(bvtv_centre, 0.06), 0.12, 0.32))
+        tbth_target = float(np.clip(rng_sample.normal(tbth_centre, 30.0), 110.0, 260.0))
+        tbn_target  = bvtv_target / (tbth_target / 1000.0)
+        br          = tbth_um_to_radius_vox(tbth_target, voxel_um)
+        bs          = max(bs_base, 4.5)
+
+        sample_dir  = dataset_dir / f"sample_{i:03d}"
         sample_dir.mkdir(parents=True, exist_ok=True)
 
-        # Per-sample variation: different morphometrics for each sample
-        rng_sample = np.random.default_rng(seed + 99999)
-        bvtv = float(np.clip(rng_sample.normal(bvtv_centre, 0.06), 0.12, 0.32))  # FIX2: wider spread
-        tbth = float(np.clip(rng_sample.normal(tbth_centre, 30.0), 110.0, 260.0))  # FIX2: wider spread
-        tbn = bvtv / (tbth / 1000.0)
-        br = tbth_um_to_radius_vox(tbth, voxel_um)
-        bs = max(bs_base, 4.5)  # prevent too-fine networks
+        bone01 = morph = None
+        passed = False
 
-        rp_kw = dict(
-            base_sigma=bs, warp_sigma=14.0,
-            warp_amp=float(best_params.get("warp_amp", 3.0)),
-            hessian_sigma=float(best_params.get("hessian_sigma", 1.4)),
-            ridge_strength=1.0,
-            proto_q_hi=float(best_params.get("proto_q_hi", 0.92)),
-            proto_q_lo=float(best_params.get("proto_q_lo", 0.84)),
-            proto_close_iters=int(best_params.get("proto_close_iters", 2)),
-            proto_open_iters=0, proto_min_component=400,
-            use_skeleton=True, skeleton_prune_lmin=8, reconnect_close_iters=3,
-            radius_mode="branch",
-            radius_jitter=float(best_params.get("radius_jitter", 0.15)),
-            radius_smooth_sigma=3.0, radius_scale_hint=1.0, prune_small_components=0,
-            aniso_ratio=float(best_params.get("aniso_ratio", 3.0)),
-        )
-        if GENERATOR_VERSION == "v16":
-            rp_kw.update(dict(
-                rod_weight=float(best_params.get("rod_weight", 0.92)),
-                plate_weight=float(best_params.get("plate_weight", 0.08)),
-                coarse_weight=0.50, medium_weight=0.35, fine_weight=0.15,
-                sheet_q=0.92, bridge_dilate_iters=0, bridge_close_iters=0,
-            ))
+        # ── Validation gate: retry loop ──
+        for attempt in range(GATE_MAX_ATTEMPTS):
+            seed = base_seed + attempt * 1000   # different seed each attempt
+            rng  = np.random.default_rng(seed)
 
-        rp = RidgeParams(**rp_kw)
-        gp = GrayParams(write_gray=True, solid_fill_sigma=3.0, marrow_mean=15.0,
-                         bone_mean=240.0, noise_sd=3.0, bg_tex_sd=1.0)
+            try:
+                rp    = RidgeParams(**_build_rp_kw(best_params, bs))
+                sk01, _ = make_proto_and_skeleton(
+                    shape=shape, rp=rp, rng=rng,
+                    skel_mode="skimage", fiji_exe=None,
+                    fiji_cmd="Skeletonize (2D/3D)", dbg=None)
+                b, _ = thicken_from_skeleton_radius_field(
+                    sk01, rng, bvtv_target, br, "branch",
+                    float(best_params.get("radius_jitter", 0.15)), 3.0, 1.0, dbg=None)
+                b = anti_block_round(b, float(best_params.get("round_sigma", 0.8)))
+                b = remove_small_components(b, 500)
+                b = keep_largest_component(b)
+            except Exception as e:
+                print(f"    [sample_{i:03d}] attempt {attempt+1} exception: {e}")
+                n_retries += 1
+                continue
 
-        sk01, si = make_proto_and_skeleton(shape=shape, rp=rp, rng=rng,
-            skel_mode="skimage", fiji_exe=None, fiji_cmd="Skeletonize (2D/3D)", dbg=None)
-        bone01, ti = thicken_from_skeleton_radius_field(sk01, rng, bvtv, br, "branch",
-            float(best_params.get("radius_jitter", 0.15)), 3.0, 1.0, dbg=None)
-        bone01 = anti_block_round(bone01, float(best_params.get("round_sigma", 0.8)))
-        bone01 = remove_small_components(bone01, 500)
-        bone01 = keep_largest_component(bone01)
+            m = measure_all_morphometrics(b, voxel_um)
+            ok, reason = _validate_sample(b, m, bvtv_target)
 
-        void01 = (1-bone01).astype(np.uint8)
+            if ok:
+                bone01 = b
+                morph  = m
+                passed = True
+                if attempt > 0:
+                    n_retries += attempt
+                    print(f"    [sample_{i:03d}] passed on attempt {attempt+1}")
+                break
+            else:
+                print(f"    [sample_{i:03d}] attempt {attempt+1} rejected: {reason}")
+                n_retries += 1
+
+        if not passed:
+            print(f"    [sample_{i:03d}] SKIPPED after {GATE_MAX_ATTEMPTS} attempts")
+            n_skipped += 1
+            # Remove empty dir so it won't confuse the PCA loader
+            try:
+                sample_dir.rmdir()
+            except OSError:
+                pass
+            continue
+
+        # ── Save accepted sample ──
         Z = shape[0]
-        save_tif_u8((bone01*255).astype(np.uint8), sample_dir/"mask.tif")
-        save_tif_u8((void01*255).astype(np.uint8), sample_dir/"void.tif")
-        save_png_u8((bone01[Z//2]*255).astype(np.uint8), sample_dir/"mid.png")
+        void01 = (1 - bone01).astype(np.uint8)
+        save_tif_u8((bone01 * 255).astype(np.uint8), sample_dir / "mask.tif")
+        save_tif_u8((void01 * 255).astype(np.uint8), sample_dir / "void.tif")
+        save_png_u8((bone01[Z // 2] * 255).astype(np.uint8), sample_dir / "mid.png")
 
-        gray = microct_gray_solid(bone01, gp, np.random.default_rng(seed+10000), br=br)
-        save_tif_u8(gray, sample_dir/"gray.tif")
-        save_png_u8(gray[Z//2], sample_dir/"gray_mid.png")
+        gray = microct_gray_solid(bone01, gp, np.random.default_rng(seed + 10000), br=br)
+        save_tif_u8(gray, sample_dir / "gray.tif")
+        save_png_u8(gray[Z // 2], sample_dir / "gray_mid.png")
 
-        morph = measure_all_morphometrics(bone01, voxel_um)
-        tgt = {"bvtv_target": bvtv, "tbth_um_target": tbth, "tbn_target": tbn, "tbsp_um_target": 0}
-
-        met = {"version": GENERATOR_VERSION, "label": f"sample_{i:03d}", "seed": seed,
-               "morphometrics": morph, "targets": tgt,
-               "params": {"ridge": asdict(rp), "gray": asdict(gp)},
-               "shape_zyx": list(shape), "voxel_um": voxel_um}
-        save_json(met, sample_dir/"metrics.json")
+        tgt = {"bvtv_target": bvtv_target, "tbth_um_target": tbth_target,
+               "tbn_target": tbn_target, "tbsp_um_target": 0}
+        rp_saved = RidgeParams(**_build_rp_kw(best_params, bs))
+        met = {
+            "version": GENERATOR_VERSION, "label": f"sample_{i:03d}", "seed": seed,
+            "morphometrics": morph, "targets": tgt,
+            "params": {"ridge": asdict(rp_saved), "gray": asdict(gp)},
+            "shape_zyx": list(shape), "voxel_um": voxel_um,
+        }
+        save_json(met, sample_dir / "metrics.json")
         all_metrics.append(met)
 
-        if (i+1) % 5 == 0 or i == 0:
+        if (i + 1) % 5 == 0 or i == 0:
             elapsed = time.time() - t0
-            eta = elapsed / (i+1) * (args.num_samples - i - 1)
+            eta = elapsed / (i + 1) * (args.num_samples - i - 1)
             print(f"    [{i+1}/{args.num_samples}] BV/TV={morph['BVTV']:.3f} "
                   f"LCC={morph['lcc_frac']:.3f} | {elapsed:.0f}s elapsed, ~{eta:.0f}s remaining")
 
-    # Dataset manifest
+    # ── Summary ──
+    n_saved = len(all_metrics)
+    print(f"\n  Generated {n_saved} valid samples "
+          f"({n_skipped} skipped, {n_retries} total retries)")
+
     save_json({
-        "version": GENERATOR_VERSION, "n": len(all_metrics),
+        "version": GENERATOR_VERSION, "n": n_saved,
+        "n_skipped": n_skipped, "n_retries": n_retries,
         "optimal_params": best_params,
         "samples": [{"label": m["label"], "seed": m["seed"],
-                      "bvtv": m["morphometrics"]["BVTV"]} for m in all_metrics],
-    }, dataset_dir/"dataset_manifest.json")
+                     "bvtv": m["morphometrics"]["BVTV"]} for m in all_metrics],
+    }, dataset_dir / "dataset_manifest.json")
 
     total = time.time() - t0
-    print(f"\n  Generated {len(all_metrics)} samples in {total:.0f}s ({total/len(all_metrics):.1f}s/sample)")
+    print(f"  Total time: {total:.0f}s ({total/max(n_saved,1):.1f}s/sample)")
     return dataset_dir, all_metrics
 
 
@@ -392,24 +474,22 @@ def run_dim_reduction(dataset_dir, outdir, n_components=16, image_size=64, seed=
     features_dir = outdir / "features"
     features_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load mid-slices
     X_rows, Y_rows, infos = [], [], []
     for d in sorted(dataset_dir.iterdir()):
-        met_path = d / "metrics.json"
+        met_path  = d / "metrics.json"
         gray_path = d / "gray.tif"
         if not d.is_dir() or not met_path.exists() or not gray_path.exists():
             continue
         with open(met_path) as f:
             met = json.load(f)
 
-        vol = tiff.imread(str(gray_path)).astype(np.float32)
+        vol  = tiff.imread(str(gray_path)).astype(np.float32)
         vmax = vol.max()
         if vmax > 0: vol /= vmax
-        mid = vol[vol.shape[0]//2]
+        mid  = vol[vol.shape[0] // 2]
 
-        # Resize
-        img = Image.fromarray((mid*255).astype(np.uint8), mode="L")
-        img = img.resize((image_size, image_size), Image.BILINEAR)
+        img  = Image.fromarray((mid * 255).astype(np.uint8), mode="L")
+        img  = img.resize((image_size, image_size), Image.BILINEAR)
         flat = np.array(img, dtype=np.float32) / 255.0
 
         X_rows.append(flat.ravel())
@@ -425,7 +505,6 @@ def run_dim_reduction(dataset_dir, outdir, n_components=16, image_size=64, seed=
         print("  WARNING: Too few samples for meaningful reduction")
         return None
 
-    # Split
     X_tr, X_te, Y_tr, Y_te, idx_tr, idx_te = train_test_split(
         X, Y, np.arange(X.shape[0]), test_size=0.2, random_state=seed)
     print(f"  Train: {X_tr.shape[0]}, Test: {X_te.shape[0]}")
@@ -433,98 +512,112 @@ def run_dim_reduction(dataset_dir, outdir, n_components=16, image_size=64, seed=
     results = {}
 
     # PCA
-    scaler = StandardScaler()
-    X_tr_s = scaler.fit_transform(X_tr)
-    X_te_s = scaler.transform(X_te)
-    nc = min(n_components, X_tr_s.shape[0], X_tr_s.shape[1])
+    scaler   = StandardScaler()
+    X_tr_s   = scaler.fit_transform(X_tr)
+    X_te_s   = scaler.transform(X_te)
+    nc       = min(n_components, X_tr_s.shape[0], X_tr_s.shape[1])
 
-    pca = PCA(n_components=nc, random_state=seed)
+    pca      = PCA(n_components=nc, random_state=seed)
     Z_tr_pca = pca.fit_transform(X_tr_s)
     Z_te_pca = pca.transform(X_te_s)
-    ev = pca.explained_variance_ratio_
-    cv = np.cumsum(ev)
+    ev       = pca.explained_variance_ratio_
+    cv       = np.cumsum(ev)
     print(f"\n  PCA: {nc} components, {cv[-1]*100:.1f}% variance explained")
 
     results["PCA"] = {"Z_train": Z_tr_pca, "Z_test": Z_te_pca,
-                       "variance_explained": float(cv[-1]), "n_components": nc}
+                      "variance_explained": float(cv[-1]), "n_components": nc}
 
-    # PCA variance plot
     fig, (a1, a2) = plt.subplots(1, 2, figsize=(12, 5))
-    a1.bar(range(len(ev)), ev, color="steelblue"); a1.set_xlabel("PC"); a1.set_ylabel("Variance Ratio")
-    a2.plot(cv, "o-", color="darkorange"); a2.axhline(0.95, color="r", ls="--", alpha=0.5)
-    a2.set_xlabel("Components"); a2.set_ylabel("Cumulative"); a2.set_title("PCA Cumulative Variance")
-    plt.tight_layout(); plt.savefig(features_dir/"pca_variance.png", dpi=150); plt.close()
+    a1.bar(range(len(ev)), ev, color="steelblue")
+    a1.set_xlabel("PC"); a1.set_ylabel("Variance Ratio")
+    a2.plot(cv, "o-", color="darkorange")
+    a2.axhline(0.95, color="r", ls="--", alpha=0.5)
+    a2.set_xlabel("Components"); a2.set_ylabel("Cumulative")
+    a2.set_title("PCA Cumulative Variance")
+    plt.tight_layout(); plt.savefig(features_dir / "pca_variance.png", dpi=150); plt.close()
 
-    # Random Projection (Gaussian + Sparse)
-    for rp_name, RPClass in [("RP_gaussian", GaussianRandomProjection), ("RP_sparse", SparseRandomProjection)]:
-        rp = RPClass(n_components=nc, random_state=seed)
-        Z_tr_rp = rp.fit_transform(X_tr_s)
-        Z_te_rp = rp.transform(X_te_s)
+    # Random Projection
+    for rp_name, RPClass in [("RP_gaussian", GaussianRandomProjection),
+                              ("RP_sparse",   SparseRandomProjection)]:
+        rp       = RPClass(n_components=nc, random_state=seed)
+        Z_tr_rp  = rp.fit_transform(X_tr_s)
+        Z_te_rp  = rp.transform(X_te_s)
 
-        # Distance preservation
-        n_chk = min(200, X_tr_s.shape[0])
-        idx = np.random.default_rng(seed).choice(X_tr_s.shape[0], n_chk, replace=False)
-        D_o = np.linalg.norm(X_tr_s[idx,None,:] - X_tr_s[None,idx,:], axis=-1)
-        D_p = np.linalg.norm(Z_tr_rp[idx,None,:] - Z_tr_rp[None,idx,:], axis=-1)
-        mask = D_o > 0
-        dp_mean = float(np.mean(D_p[mask]/D_o[mask])) if mask.any() else 0
+        n_chk    = min(200, X_tr_s.shape[0])
+        idx      = np.random.default_rng(seed).choice(X_tr_s.shape[0], n_chk, replace=False)
+        D_o      = np.linalg.norm(X_tr_s[idx, None, :] - X_tr_s[None, idx, :], axis=-1)
+        D_p      = np.linalg.norm(Z_tr_rp[idx, None, :] - Z_tr_rp[None, idx, :], axis=-1)
+        mask     = D_o > 0
+        dp_mean  = float(np.mean(D_p[mask] / D_o[mask])) if mask.any() else 0
 
         print(f"  {rp_name}: {nc} components, dist preservation={dp_mean:.3f}")
         results[rp_name] = {"Z_train": Z_tr_rp, "Z_test": Z_te_rp,
-                             "dist_preservation": dp_mean, "n_components": nc}
+                            "dist_preservation": dp_mean, "n_components": nc}
 
-    # Comparison scatter plots
+    # Scatter comparison
     for li, ln in enumerate(LABEL_KEYS):
         fig, axes = plt.subplots(1, 3, figsize=(18, 5))
         for ax, (name, r) in zip(axes, results.items()):
-            Z = r["Z_train"]
+            Z  = r["Z_train"]
             if Z.shape[1] >= 2:
-                sc = ax.scatter(Z[:,0], Z[:,1], c=Y_tr[:,li], cmap="viridis", s=20, alpha=0.7)
-                plt.colorbar(sc, ax=ax); ax.set_title(f"{name} ({ln})")
-        plt.tight_layout(); plt.savefig(features_dir/f"comparison_{ln}.png", dpi=150); plt.close()
+                sc = ax.scatter(Z[:, 0], Z[:, 1], c=Y_tr[:, li],
+                                cmap="viridis", s=20, alpha=0.7)
+                cbar = plt.colorbar(sc, ax=ax)
+                cbar.set_label(ln)
+                ax.set_title(f"{name} ({ln})")
+        plt.tight_layout()
+        plt.savefig(features_dir / f"comparison_{ln}.png", dpi=150)
+        plt.close()
 
-    # Export quantum-ready .npz
+    # Quantum export
     quantum_files = {}
     for name, r in results.items():
-        mm = MinMaxScaler(feature_range=(0, np.pi))
-        Zq_tr = mm.fit_transform(r["Z_train"])
-        Zq_te = mm.transform(r["Z_test"])
+        mm      = MinMaxScaler(feature_range=(0, np.pi))
+        Zq_tr   = mm.fit_transform(r["Z_train"])
+        Zq_te   = mm.transform(r["Z_test"])
 
-        mm01 = MinMaxScaler(feature_range=(0, 1))
-        Z01_tr = mm01.fit_transform(r["Z_train"])
-        Z01_te = mm01.transform(r["Z_test"])
+        mm01    = MinMaxScaler(feature_range=(0, 1))
+        Z01_tr  = mm01.fit_transform(r["Z_train"])
+        Z01_te  = mm01.transform(r["Z_test"])
 
-        fname = features_dir / f"{name.lower()}_quantum_ready.npz"
-        np.savez(fname, Z_train=Zq_tr, Z_test=Zq_te, Z_train_01=Z01_tr, Z_test_01=Z01_te,
-                 Y_train=Y_tr, Y_test=Y_te, label_names=LABEL_KEYS,
-                 n_features=Zq_tr.shape[1])
+        fname   = features_dir / f"{name.lower()}_quantum_ready.npz"
+        np.savez(fname, Z_train=Zq_tr, Z_test=Zq_te,
+                 Z_train_01=Z01_tr, Z_test_01=Z01_te,
+                 Y_train=Y_tr, Y_test=Y_te,
+                 label_names=LABEL_KEYS, n_features=Zq_tr.shape[1])
         quantum_files[name] = str(fname)
         print(f"  Saved: {fname} ({Zq_tr.shape[0]} train, {Zq_te.shape[0]} test, {Zq_tr.shape[1]}D)")
 
-    # Label correlations
-    corr_results = {}
+    # Correlation heatmaps
     for name, r in results.items():
-        Z = r["Z_train"]; nc = Z.shape[1]; nl = Y_tr.shape[1]
-        corr = np.zeros((nc, nl))
-        for i in range(nc):
-            for j in range(nl):
-                if np.std(Z[:,i]) > 1e-8 and np.std(Y_tr[:,j]) > 1e-8:
-                    corr[i,j] = np.corrcoef(Z[:,i], Y_tr[:,j])[0,1]
-        corr_results[name] = corr
+        Z   = r["Z_train"]; nc2 = Z.shape[1]; nl = Y_tr.shape[1]
+        corr = np.zeros((nc2, nl))
+        for ii in range(nc2):
+            for jj in range(nl):
+                if np.std(Z[:, ii]) > 1e-8 and np.std(Y_tr[:, jj]) > 1e-8:
+                    corr[ii, jj] = np.corrcoef(Z[:, ii], Y_tr[:, jj])[0, 1]
 
-        # Heatmap
-        fig, ax = plt.subplots(figsize=(8, max(4, nc*0.3)))
-        im = ax.imshow(corr[:min(nc,20),:], aspect="auto", cmap="RdBu_r", vmin=-1, vmax=1)
-        ax.set_yticks(range(min(nc,20))); ax.set_yticklabels([f"C{i}" for i in range(min(nc,20))])
-        ax.set_xticks(range(len(LABEL_KEYS))); ax.set_xticklabels(LABEL_KEYS, rotation=45, ha="right")
-        ax.set_title(f"{name}: Component-Label Correlations"); plt.colorbar(im, ax=ax)
-        plt.tight_layout(); plt.savefig(features_dir/f"{name.lower()}_correlation.png", dpi=150); plt.close()
+        fig, ax = plt.subplots(figsize=(8, max(4, nc2 * 0.3)))
+        im = ax.imshow(corr[:min(nc2, 20), :], aspect="auto", cmap="RdBu_r", vmin=-1, vmax=1)
+        ax.set_yticks(range(min(nc2, 20)))
+        ax.set_yticklabels([f"C{ii}" for ii in range(min(nc2, 20))])
+        ax.set_xticks(range(len(LABEL_KEYS)))
+        ax.set_xticklabels(LABEL_KEYS, rotation=45, ha="right")
+        ax.set_title(f"{name}: Component-Label Correlations")
+        plt.colorbar(im, ax=ax)
+        plt.tight_layout()
+        plt.savefig(features_dir / f"{name.lower()}_correlation.png", dpi=150)
+        plt.close()
 
     return {
-        "features_dir": str(features_dir), "results": {k: {"n_components": v["n_components"],
-            "variance_explained": v.get("variance_explained"), "dist_preservation": v.get("dist_preservation")}
-            for k,v in results.items()},
-        "quantum_files": quantum_files, "n_train": int(X_tr.shape[0]), "n_test": int(X_te.shape[0]),
+        "features_dir": str(features_dir),
+        "results": {k: {"n_components": v["n_components"],
+                        "variance_explained": v.get("variance_explained"),
+                        "dist_preservation": v.get("dist_preservation")}
+                    for k, v in results.items()},
+        "quantum_files": quantum_files,
+        "n_train": int(X_tr.shape[0]),
+        "n_test":  int(X_te.shape[0]),
     }
 
 
@@ -533,18 +626,21 @@ def run_dim_reduction(dataset_dir, outdir, n_components=16, image_size=64, seed=
 # ═══════════════════════════════════════════════════════════
 
 def generate_report(outdir, opt_result, best_params, importances, dataset_metrics, reduction_result, args):
-    """Step 4: Save comprehensive summary."""
     print(f"\n{'='*60}")
     print(f"  STEP 4: FINAL REPORT")
     print(f"{'='*60}")
 
     report = {
-        "pipeline_version": "1.0",
+        "pipeline_version": "1.1",
         "generator_version": GENERATOR_VERSION,
         "timestamp": datetime.now().isoformat(),
         "reference_image": args.reference_image,
         "voi_dirs": args.voi_dirs,
-
+        "validation_gate": {
+            "bvtv_rel_err_max": GATE_BVTV_REL_ERR,
+            "lcc_min": GATE_LCC_MIN,
+            "max_attempts": GATE_MAX_ATTEMPTS,
+        },
         "optimization": {
             "n_trials": args.optimize_trials,
             "best_loss": opt_result.get("best_loss"),
@@ -552,22 +648,19 @@ def generate_report(outdir, opt_result, best_params, importances, dataset_metric
             "importances": {k: float(v) for k,v in importances.items()} if importances else {},
             "top_3_params": [k for k,v in sorted(importances.items(), key=lambda x:-x[1])[:3]] if importances else [],
         },
-
         "generation": {
-            "num_samples": args.num_samples,
+            "num_samples_requested": args.num_samples,
+            "num_samples_saved": len(dataset_metrics),
             "shape": [args.z, args.xy, args.xy],
             "voxel_um": args.voxel_um,
             "avg_bvtv": float(np.mean([m["morphometrics"]["BVTV"] for m in dataset_metrics])) if dataset_metrics else None,
         },
-
         "dimensionality_reduction": reduction_result,
-
         "quantum_ready": {
             "n_components": args.n_components,
             "encoding": "angle [0, pi]",
             "n_qubits_needed": args.n_components,
         },
-
         "paper_figures": [
             "importance_plot.png",
             "convergence_plot.png",
@@ -575,15 +668,14 @@ def generate_report(outdir, opt_result, best_params, importances, dataset_metric
         ] + [f"comparison_{ln}.png" for ln in LABEL_KEYS],
     }
 
-    with open(outdir/"pipeline_report.json", "w") as f:
+    with open(outdir / "pipeline_report.json", "w") as f:
         json.dump(report, f, indent=2, default=str)
 
-    # Print summary
-    print(f"\n  Optimization: {args.optimize_trials} trials, best loss={opt_result.get('best_loss', '?'):.4f}")
+    print(f"\n  Optimization: {args.optimize_trials} trials, best loss={opt_result.get('best_loss') or '?'}")
     if importances:
         top3 = [k for k,v in sorted(importances.items(), key=lambda x:-x[1])[:3]]
         print(f"  Top 3 important params: {', '.join(top3)}")
-    print(f"  Generated: {args.num_samples} samples at {args.xy}x{args.xy}x{args.z}")
+    print(f"  Generated: {len(dataset_metrics)}/{args.num_samples} samples at {args.xy}x{args.xy}x{args.z}")
     if dataset_metrics:
         bvtvs = [m["morphometrics"]["BVTV"] for m in dataset_metrics]
         print(f"  BV/TV range: [{min(bvtvs):.3f}, {max(bvtvs):.3f}]")
@@ -593,9 +685,8 @@ def generate_report(outdir, opt_result, best_params, importances, dataset_metric
             dp = v.get("dist_preservation")
             if ve: print(f"  {k}: {ve*100:.1f}% variance explained")
             if dp: print(f"  {k}: {dp:.3f} distance preservation")
-        print(f"  Quantum files: {list(reduction_result.get('quantum_files', {}).values())}")
 
-    print(f"\n  Full report: {outdir/'pipeline_report.json'}")
+    print(f"\n  Full report: {outdir / 'pipeline_report.json'}")
     print(f"  All outputs in: {outdir}/")
 
 
@@ -605,7 +696,7 @@ def generate_report(outdir, opt_result, best_params, importances, dataset_metric
 
 def main():
     p = argparse.ArgumentParser(description="Full pipeline: optimize -> generate -> reduce -> quantum export")
-    p.add_argument("--reference-image", type=str, required=True, help="Real VOI1 mid-slice PNG")
+    p.add_argument("--reference-image", type=str, required=True)
     p.add_argument("--voi-dirs", nargs="+", type=str, default=None)
     p.add_argument("--outdir", type=str, default="output/full_pipeline")
     p.add_argument("--optimize-trials", type=int, default=60)
@@ -616,8 +707,8 @@ def main():
     p.add_argument("--n-components", type=int, default=16)
     p.add_argument("--image-size", type=int, default=64)
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--skip-optimize", action="store_true", help="Skip optimization, use default params")
-    p.add_argument("--params-json", type=str, default=None, help="Load pre-computed optimal params")
+    p.add_argument("--skip-optimize", action="store_true")
+    p.add_argument("--params-json", type=str, default=None)
     args = p.parse_args()
 
     outdir = Path(args.outdir)
@@ -631,13 +722,12 @@ def main():
     print(f"  Output: {outdir}")
     print(f"{'#'*60}")
 
-    # STEP 1: Optimize
     importances = {}
     if args.params_json:
         with open(args.params_json) as f:
             data = json.load(f)
         best_params = data.get("best_params", data)
-        opt_result = data
+        opt_result  = data
         print(f"\n  Loaded pre-computed params from {args.params_json}")
     elif args.skip_optimize:
         best_params = {"bvtv": 0.22, "tbth_um": 180.0, "base_sigma": 5.0,
@@ -645,23 +735,25 @@ def main():
                        "proto_q_hi": 0.92, "proto_q_lo": 0.84, "proto_close_iters": 2,
                        "radius_jitter": 0.15, "round_sigma": 0.7,
                        "rod_weight": 1.0, "plate_weight": 0.0}
-        opt_result = {"best_loss": None, "best_params": best_params}
+        opt_result  = {"best_loss": None, "best_params": best_params}
         print(f"\n  Skipping optimization, using v15 proven defaults")
     else:
         best_params, importances = run_optimization(args.reference_image, args.optimize_trials, outdir)
         opt_result = {"best_loss": None, "best_params": best_params}
-        with open(outdir/"optimization_result.json") as f:
+        with open(outdir / "optimization_result.json") as f:
             opt_result = json.load(f)
 
-    # STEP 2: Generate
     dataset_dir, dataset_metrics = generate_dataset(best_params, args, outdir)
 
-    # STEP 3: PCA + RP
-    reduction_result = run_dim_reduction(dataset_dir, outdir, n_components=args.n_components,
-                                          image_size=args.image_size, seed=args.seed)
+    reduction_result = run_dim_reduction(
+        dataset_dir, outdir,
+        n_components=args.n_components,
+        image_size=args.image_size,
+        seed=args.seed,
+    )
 
-    # STEP 4: Report
-    generate_report(outdir, opt_result, best_params, importances, dataset_metrics, reduction_result, args)
+    generate_report(outdir, opt_result, best_params, importances,
+                    dataset_metrics, reduction_result, args)
 
     total_elapsed = time.time() - total_t0
     print(f"\n{'#'*60}")
