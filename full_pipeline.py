@@ -275,10 +275,13 @@ def run_optimization(ref_path, n_trials, outdir):
 def _validate_sample(bone01: np.ndarray, morph: dict, bvtv_target: float) -> tuple[bool, str]:
     """
     Validation gate: returns (passed, reason_if_failed).
-    Checks BV/TV error, LCC fraction. Called after every generation attempt.
+    Checks BV/TV error, LCC fraction, Tb.Th and Tb.N plausibility.
+    Called after every generation attempt.
     """
     bvtv_measured = morph.get("BVTV", 0.0)
     lcc_frac      = morph.get("lcc_frac", 0.0)
+    tbth          = morph.get("TbTh_um_p50", 0.0)
+    tbn           = morph.get("TbN_per_mm", 0.0)
 
     # Check 1: BV/TV must be within 15% of target
     if bvtv_target > 0:
@@ -296,6 +299,16 @@ def _validate_sample(bone01: np.ndarray, morph: dict, bvtv_target: float) -> tup
         return False, f"BV/TV={bvtv_measured:.3f} near zero (skeleton collapsed)"
     if bvtv_measured > 0.60:
         return False, f"BV/TV={bvtv_measured:.3f} near one (over-thickened blob)"
+
+    # Check 4: Tb.Th must be in a physically plausible range
+    # floor ~78um at 39um voxel size (2 voxels minimum), ceiling 350um
+    if tbth < 78.0 or tbth > 350.0:
+        return False, f"TbTh={tbth:.1f}um out of range [78, 350] (resolution floor or blob)"
+
+    # Check 5: Tb.N must be in a plausible range
+    # catches sparse skeletons (<0.8) and over-thickened blobs (>4.0)
+    if tbn < 0.8 or tbn > 4.0:
+        return False, f"TbN={tbn:.2f}/mm out of range [0.8, 4.0] (sparse or merged network)"
 
     return True, ""
 
