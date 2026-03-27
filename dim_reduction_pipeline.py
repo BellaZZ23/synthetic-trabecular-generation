@@ -1,19 +1,6 @@
 #!/usr/bin/env python3
 """
 dim_reduction_pipeline.py
-
-Dimensionality reduction pipeline for synthetic trabecular bone micro-CT images.
-Performs PCA and Random Projection, extracts morphometric labels, and prepares
-feature vectors for downstream classical/quantum ML.
-
-Usage:
-  python dim_reduction_pipeline.py \
-      --dataset-dir output/v16_dense_v8 \
-      --outdir output/features \
-      --n-components 16 \
-      --slice-mode mid \
-      --image-size 64 \
-      --seed 42
 """
 from __future__ import annotations
 
@@ -43,23 +30,18 @@ import matplotlib.pyplot as plt
 # ──────────────────────────────────────────────────────────
 
 def discover_samples(dataset_dir: Path) -> list[dict]:
-    """Find all sample directories and load their metrics + images."""
     samples = []
     for d in sorted(dataset_dir.iterdir()):
         metrics_path = d / "metrics.json"
         if not d.is_dir() or not metrics_path.exists():
             continue
-
         with open(metrics_path) as f:
             metrics = json.load(f)
-
         gray_path = d / "gray.tif"
         mask_path = d / "mask.tif"
-
         if not gray_path.exists() and not mask_path.exists():
             print(f"  Skipping {d.name}: no gray.tif or mask.tif")
             continue
-
         samples.append({
             "name": d.name,
             "dir": d,
@@ -67,13 +49,11 @@ def discover_samples(dataset_dir: Path) -> list[dict]:
             "gray_path": gray_path if gray_path.exists() else None,
             "mask_path": mask_path if mask_path.exists() else None,
         })
-
     print(f"Discovered {len(samples)} samples in {dataset_dir}")
     return samples
 
 
 def load_volume(path: Path) -> np.ndarray:
-    """Load a 3D TIFF volume as float32 [0, 1]."""
     vol = tiff.imread(str(path)).astype(np.float32)
     vmax = vol.max()
     if vmax > 0:
@@ -82,14 +62,6 @@ def load_volume(path: Path) -> np.ndarray:
 
 
 def extract_slices(vol: np.ndarray, mode: str = "mid", n_slices: int = 5) -> list[np.ndarray]:
-    """Extract 2D slices from a 3D volume.
-
-    Modes:
-        mid      - single middle slice
-        multi    - n_slices evenly spaced
-        all      - every slice
-        mip      - maximum intensity projection (single image)
-    """
     Z = vol.shape[0]
     if mode == "mid":
         return [vol[Z // 2]]
@@ -105,7 +77,6 @@ def extract_slices(vol: np.ndarray, mode: str = "mid", n_slices: int = 5) -> lis
 
 
 def resize_slice(s: np.ndarray, size: int) -> np.ndarray:
-    """Resize a 2D slice to (size, size) using PIL."""
     img = Image.fromarray((s * 255).astype(np.uint8), mode="L")
     img = img.resize((size, size), Image.BILINEAR)
     return np.array(img, dtype=np.float32) / 255.0
@@ -115,7 +86,6 @@ def resize_slice(s: np.ndarray, size: int) -> np.ndarray:
 #  2. MORPHOMETRIC LABEL EXTRACTION
 # ──────────────────────────────────────────────────────────
 
-# These are the four key parameters your supervisor identified
 LABEL_KEYS = [
     "BVTV",
     "TbTh_um_p50",
@@ -123,7 +93,6 @@ LABEL_KEYS = [
     "TbSp_um_p50",
 ]
 
-# Additional labels available from the generator
 EXTENDED_LABEL_KEYS = [
     "BVTV",
     "TbTh_um_p50",
@@ -139,7 +108,6 @@ EXTENDED_LABEL_KEYS = [
 
 
 def extract_labels(metrics: dict, keys: list[str] = None) -> dict:
-    """Pull morphometric labels from a sample's metrics.json."""
     keys = keys or LABEL_KEYS
     morph = metrics.get("morphometrics", {})
     labels = {}
@@ -151,36 +119,28 @@ def extract_labels(metrics: dict, keys: list[str] = None) -> dict:
 
 
 def extract_generator_params(metrics: dict) -> dict:
-    """Pull the generator control parameters used for this sample."""
     params = metrics.get("params", {})
     ridge = params.get("ridge", {})
     targets = metrics.get("targets", {})
-
     return {
-        # Morphometric targets
         "bvtv_target": targets.get("bvtv_target"),
         "tbth_um_target": targets.get("tbth_um_target"),
         "tbn_target": targets.get("tbn_target"),
         "tbsp_um_target": targets.get("tbsp_um_target"),
-        # Network topology controls
         "base_sigma": ridge.get("base_sigma"),
         "aniso_ratio": ridge.get("aniso_ratio"),
         "rod_weight": ridge.get("rod_weight"),
         "plate_weight": ridge.get("plate_weight"),
         "sheet_q": ridge.get("sheet_q"),
-        # Proto-network thresholds
         "proto_q_hi": ridge.get("proto_q_hi"),
         "proto_q_lo": ridge.get("proto_q_lo"),
         "proto_close_iters": ridge.get("proto_close_iters"),
-        # Skeleton refinement
         "skeleton_prune_lmin": ridge.get("skeleton_prune_lmin"),
         "reconnect_close_iters": ridge.get("reconnect_close_iters"),
-        # Thickening
         "radius_mode": ridge.get("radius_mode"),
         "radius_jitter": ridge.get("radius_jitter"),
         "radius_smooth_sigma": ridge.get("radius_smooth_sigma"),
         "radius_scale_hint": ridge.get("radius_scale_hint"),
-        # Seed
         "seed": metrics.get("seed"),
     }
 
@@ -196,14 +156,6 @@ def build_feature_matrix(
     n_slices: int = 5,
     image_size: int = 64,
 ) -> tuple[np.ndarray, np.ndarray, list[dict], list[dict]]:
-    """Build flattened feature matrix X and label matrix Y.
-
-    Returns:
-        X: (n_images, image_size*image_size) flattened pixel features
-        Y: (n_images, n_labels) morphometric labels
-        sample_info: per-image metadata
-        gen_params: per-image generator parameters
-    """
     X_rows = []
     Y_rows = []
     info = []
@@ -250,10 +202,6 @@ def run_pca(
     n_components: int,
     scaler: Optional[StandardScaler] = None,
 ) -> dict:
-    """Run PCA dimensionality reduction.
-
-    Returns dict with transformed data, model, and diagnostics.
-    """
     if scaler is None:
         scaler = StandardScaler()
         X_train_s = scaler.fit_transform(X_train)
@@ -271,7 +219,6 @@ def run_pca(
     explained = pca.explained_variance_ratio_
     cumulative = np.cumsum(explained)
 
-    # Reconstruction error
     X_recon = pca.inverse_transform(Z_train)
     recon_mse = float(np.mean((X_train_s - X_recon) ** 2))
 
@@ -305,10 +252,6 @@ def run_random_projection(
     seed: int = 42,
     scaler: Optional[StandardScaler] = None,
 ) -> dict:
-    """Run Random Projection dimensionality reduction.
-
-    Methods: 'gaussian' or 'sparse'
-    """
     if scaler is None:
         scaler = StandardScaler()
         X_train_s = scaler.fit_transform(X_train)
@@ -329,7 +272,6 @@ def run_random_projection(
     Z_train = rp.fit_transform(X_train_s)
     Z_test = rp.transform(X_test_s)
 
-    # Pairwise distance preservation (Johnson-Lindenstrauss quality)
     n_check = min(200, X_train_s.shape[0])
     idx = np.random.default_rng(seed).choice(X_train_s.shape[0], n_check, replace=False)
     D_orig = np.linalg.norm(
@@ -370,7 +312,6 @@ def run_random_projection(
 # ──────────────────────────────────────────────────────────
 
 def compare_methods(pca_result: dict, rp_results: list[dict]) -> dict:
-    """Compare PCA vs RP in terms of feature quality."""
     comparison = {
         "PCA": {
             "n_components": pca_result["n_components"],
@@ -393,7 +334,6 @@ def label_correlation_analysis(
     method_name: str,
     label_names: list[str],
 ) -> dict:
-    """Compute correlation between reduced features and morphometric labels."""
     n_comp = Z.shape[1]
     n_labels = Y.shape[1]
     corr = np.zeros((n_comp, n_labels))
@@ -421,7 +361,6 @@ def label_correlation_analysis(
 # ──────────────────────────────────────────────────────────
 
 def plot_pca_variance(pca_result: dict, outdir: Path):
-    """Plot explained variance and cumulative variance."""
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
 
     ev = pca_result["explained_variance_ratio"]
@@ -459,7 +398,9 @@ def plot_2d_embedding(
     fig, ax = plt.subplots(figsize=(8, 6))
     sc = ax.scatter(Z[:, 0], Z[:, 1], c=Y[:, label_idx], cmap="viridis",
                     s=30, alpha=0.7, edgecolors="k", linewidths=0.3)
-    plt.colorbar(sc, ax=ax, label=label_name)
+    # FIX 1: colorbar label is always the morphometric label, never bleeds from axes
+    cbar = plt.colorbar(sc, ax=ax)
+    cbar.set_label(label_name)
     ax.set_xlabel(f"{method_name} Component 1")
     ax.set_ylabel(f"{method_name} Component 2")
     ax.set_title(f"{method_name}: colored by {label_name}")
@@ -471,7 +412,6 @@ def plot_2d_embedding(
 
 
 def plot_correlation_heatmap(corr_result: dict, outdir: Path):
-    """Plot heatmap of component-label correlations."""
     corr = np.array(corr_result["correlation_matrix"])
     labels = corr_result["label_names"]
     method = corr_result["method"]
@@ -502,14 +442,17 @@ def plot_method_comparison(Z_pca, Z_rp, Y, label_idx, label_name, outdir):
     ax1.set_title(f"PCA (colored by {label_name})")
     ax1.set_xlabel("PC1")
     ax1.set_ylabel("PC2")
-    plt.colorbar(sc1, ax=ax1)
+    # FIX 1: explicit label on each colorbar so ax2 ylabel never bleeds in
+    cbar1 = plt.colorbar(sc1, ax=ax1)
+    cbar1.set_label(label_name)
 
     sc2 = ax2.scatter(Z_rp[:, 0], Z_rp[:, 1], c=Y[:, label_idx],
                       cmap="viridis", s=30, alpha=0.7)
     ax2.set_title(f"Random Projection (colored by {label_name})")
     ax2.set_xlabel("RP1")
     ax2.set_ylabel("RP2")
-    plt.colorbar(sc2, ax=ax2)
+    cbar2 = plt.colorbar(sc2, ax=ax2)
+    cbar2.set_label(label_name)
 
     plt.tight_layout()
     plt.savefig(outdir / f"comparison_pca_rp_{label_name}.png", dpi=150)
@@ -531,17 +474,10 @@ def export_for_quantum(
     gen_params_train: list[dict],
     outdir: Path,
 ):
-    """Export reduced features + labels for quantum kernel experiments.
-
-    Saves .npz files ready for qiskit-machine-learning or pennylane.
-    Normalizes features to [0, pi] range suitable for angle encoding.
-    """
-    # Normalize to [0, pi] for angle encoding
     mm = MinMaxScaler(feature_range=(0, np.pi))
     Z_train_q = mm.fit_transform(Z_train)
     Z_test_q = mm.transform(Z_test)
 
-    # Also save [0, 1] normalized version
     mm01 = MinMaxScaler(feature_range=(0, 1))
     Z_train_01 = mm01.fit_transform(Z_train)
     Z_test_01 = mm01.transform(Z_test)
@@ -564,7 +500,6 @@ def export_for_quantum(
     print(f"    Train: {Z_train_q.shape}, Test: {Z_test_q.shape}")
     print(f"    Feature range: [0, pi] for angle encoding")
 
-    # Save generator params as JSON for traceability
     params_fname = outdir / f"{method_name.lower()}_generator_params.json"
     with open(params_fname, "w") as f:
         json.dump({
@@ -592,19 +527,14 @@ def export_for_quantum(
 
 def build_parser():
     p = argparse.ArgumentParser(description="PCA & RP pipeline for trabecular images")
-    p.add_argument("--dataset-dir", type=str, required=True,
-                   help="Directory containing sample_000/, sample_001/, etc.")
+    p.add_argument("--dataset-dir", type=str, required=True)
     p.add_argument("--outdir", type=str, default="output/features")
-    p.add_argument("--n-components", type=int, default=16,
-                   help="Number of reduced dimensions (= qubits for quantum)")
+    p.add_argument("--n-components", type=int, default=16)
     p.add_argument("--slice-mode", type=str, default="mid",
                    choices=["mid", "multi", "all", "mip"])
-    p.add_argument("--n-slices", type=int, default=5,
-                   help="Number of slices for 'multi' mode")
-    p.add_argument("--image-size", type=int, default=64,
-                   help="Resize images to NxN before flattening")
-    p.add_argument("--use-mask", action="store_true",
-                   help="Use binary mask instead of grayscale")
+    p.add_argument("--n-slices", type=int, default=5)
+    p.add_argument("--image-size", type=int, default=64)
+    p.add_argument("--use-mask", action="store_true")
     p.add_argument("--test-split", type=float, default=0.2)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--rp-method", type=str, default="both",
@@ -622,7 +552,6 @@ def main():
     print("  DIMENSIONALITY REDUCTION PIPELINE")
     print("=" * 60)
 
-    # ── Load data ──
     samples = discover_samples(Path(args.dataset_dir))
     if len(samples) == 0:
         raise FileNotFoundError(f"No samples found in {args.dataset_dir}")
@@ -636,10 +565,8 @@ def main():
     )
 
     if X.shape[0] < 4:
-        print(f"\nWARNING: Only {X.shape[0]} images. Generate more samples for "
-              f"meaningful dimensionality reduction. Recommend >= 30.")
+        print(f"\nWARNING: Only {X.shape[0]} images.")
 
-    # ── Train/test split ──
     if X.shape[0] >= 4:
         X_train, X_test, Y_train, Y_test, idx_train, idx_test = train_test_split(
             X, Y, np.arange(X.shape[0]),
@@ -739,17 +666,6 @@ def main():
             "encoding": "angle [0, pi]",
         },
         "label_keys": LABEL_KEYS,
-        "controllable_generator_params": [
-            "bvtv", "tbth_um", "tbn_per_mm", "tbsp_um",
-            "base_sigma", "aniso_ratio", "rod_weight", "plate_weight",
-            "sheet_q", "proto_q_hi", "proto_q_lo", "proto_close_iters",
-            "skeleton_prune_lmin", "reconnect_close_iters",
-            "radius_mode", "radius_jitter", "radius_smooth_sigma",
-            "radius_scale_hint", "marrow_mean", "bone_mean",
-            "solid_fill_sigma", "noise_sd", "round_sigma",
-            "warp_amp", "warp_sigma", "hessian_sigma",
-            "enforce_lcc", "min_component_size",
-        ],
     }
 
     with open(outdir / "pipeline_summary.json", "w") as f:

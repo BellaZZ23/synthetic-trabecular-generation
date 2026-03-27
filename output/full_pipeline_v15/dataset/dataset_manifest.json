@@ -1,0 +1,271 @@
+{
+  "version": "v15",
+  "n": 50,
+  "optimal_params": {
+    "bvtv": 0.22,
+    "tbth_um": 180.0,
+    "base_sigma": 5.0,
+    "aniso_ratio": 3.0,
+    "warp_amp": 3.0,
+    "hessian_sigma": 1.4,
+    "proto_q_hi": 0.92,
+    "proto_q_lo": 0.84,
+    "proto_close_iters": 2,
+    "radius_jitter": 0.15,
+    "round_sigma": 0.7,
+    "rod_weight": 1.0,
+    "plate_weight": 0.0
+  },
+  "samples": [
+    {
+      "label": "sample_000",
+      "seed": 43,
+      "bvtv": 0.21164340972900392
+    },
+    {
+      "label": "sample_001",
+      "seed": 44,
+      "bvtv": 0.21190471649169923
+    },
+    {
+      "label": "sample_002",
+      "seed": 45,
+      "bvtv": 0.211749267578125
+    },
+    {
+      "label": "sample_003",
+      "seed": 46,
+      "bvtv": 0.21171245574951172
+    },
+    {
+      "label": "sample_004",
+      "seed": 47,
+      "bvtv": 0.21154823303222656
+    },
+    {
+      "label": "sample_005",
+      "seed": 48,
+      "bvtv": 0.2117694854736328
+    },
+    {
+      "label": "sample_006",
+      "seed": 49,
+      "bvtv": 0.21115970611572266
+    },
+    {
+      "label": "sample_007",
+      "seed": 50,
+      "bvtv": 0.21165313720703124
+    },
+    {
+      "label": "sample_008",
+      "seed": 51,
+      "bvtv": 0.21116065979003906
+    },
+    {
+      "label": "sample_009",
+      "seed": 52,
+      "bvtv": 0.21140098571777344
+    },
+    {
+      "label": "sample_010",
+      "seed": 53,
+      "bvtv": 0.2108675003051758
+    },
+    {
+      "label": "sample_011",
+      "seed": 54,
+      "bvtv": 0.21109066009521485
+    },
+    {
+      "label": "sample_012",
+      "seed": 55,
+      "bvtv": 0.21201419830322266
+    },
+    {
+      "label": "sample_013",
+      "seed": 56,
+      "bvtv": 0.21135520935058594
+    },
+    {
+      "label": "sample_014",
+      "seed": 57,
+      "bvtv": 0.2115407943725586
+    },
+    {
+      "label": "sample_015",
+      "seed": 58,
+      "bvtv": 0.21124496459960937
+    },
+    {
+      "label": "sample_016",
+      "seed": 59,
+      "bvtv": 0.2114124298095703
+    },
+    {
+      "label": "sample_017",
+      "seed": 60,
+      "bvtv": 0.21160602569580078
+    },
+    {
+      "label": "sample_018",
+      "seed": 61,
+      "bvtv": 0.21114940643310548
+    },
+    {
+      "label": "sample_019",
+      "seed": 62,
+      "bvtv": 0.211468505859375
+    },
+    {
+      "label": "sample_020",
+      "seed": 63,
+      "bvtv": 0.2114482879638672
+    },
+    {
+      "label": "sample_021",
+      "seed": 64,
+      "bvtv": 0.2114645004272461
+    },
+    {
+      "label": "sample_022",
+      "seed": 65,
+      "bvtv": 0.211529541015625
+    },
+    {
+      "label": "sample_023",
+      "seed": 66,
+      "bvtv": 0.21144886016845704
+    },
+    {
+      "label": "sample_024",
+      "seed": 67,
+      "bvtv": 0.21145343780517578
+    },
+    {
+      "label": "sample_025",
+      "seed": 68,
+      "bvtv": 0.2115306854248047
+    },
+    {
+      "label": "sample_026",
+      "seed": 69,
+      "bvtv": 0.2117176055908203
+    },
+    {
+      "label": "sample_027",
+      "seed": 70,
+      "bvtv": 0.21158199310302733
+    },
+    {
+      "label": "sample_028",
+      "seed": 71,
+      "bvtv": 0.21124668121337892
+    },
+    {
+      "label": "sample_029",
+      "seed": 72,
+      "bvtv": 0.2116168975830078
+    },
+    {
+      "label": "sample_030",
+      "seed": 73,
+      "bvtv": 0.211224365234375
+    },
+    {
+      "label": "sample_031",
+      "seed": 74,
+      "bvtv": 0.21088047027587892
+    },
+    {
+      "label": "sample_032",
+      "seed": 75,
+      "bvtv": 0.21187896728515626
+    },
+    {
+      "label": "sample_033",
+      "seed": 76,
+      "bvtv": 0.21124954223632814
+    },
+    {
+      "label": "sample_034",
+      "seed": 77,
+      "bvtv": 0.21208953857421875
+    },
+    {
+      "label": "sample_035",
+      "seed": 78,
+      "bvtv": 0.2109394073486328
+    },
+    {
+      "label": "sample_036",
+      "seed": 79,
+      "bvtv": 0.2120758056640625
+    },
+    {
+      "label": "sample_037",
+      "seed": 80,
+      "bvtv": 0.2119121551513672
+    },
+    {
+      "label": "sample_038",
+      "seed": 81,
+      "bvtv": 0.21120223999023438
+    },
+    {
+      "label": "sample_039",
+      "seed": 82,
+      "bvtv": 0.21179656982421874
+    },
+    {
+      "label": "sample_040",
+      "seed": 83,
+      "bvtv": 0.2118762969970703
+    },
+    {
+      "label": "sample_041",
+      "seed": 84,
+      "bvtv": 0.21180591583251954
+    },
+    {
+      "label": "sample_042",
+      "seed": 85,
+      "bvtv": 0.21118831634521484
+    },
+    {
+      "label": "sample_043",
+      "seed": 86,
+      "bvtv": 0.21178665161132812
+    },
+    {
+      "label": "sample_044",
+      "seed": 87,
+      "bvtv": 0.21183223724365235
+    },
+    {
+      "label": "sample_045",
+      "seed": 88,
+      "bvtv": 0.21171741485595702
+    },
+    {
+      "label": "sample_046",
+      "seed": 89,
+      "bvtv": 0.21217803955078124
+    },
+    {
+      "label": "sample_047",
+      "seed": 90,
+      "bvtv": 0.2114858627319336
+    },
+    {
+      "label": "sample_048",
+      "seed": 91,
+      "bvtv": 0.21148242950439453
+    },
+    {
+      "label": "sample_049",
+      "seed": 92,
+      "bvtv": 0.21142501831054689
+    }
+  ]
+}

@@ -1,0 +1,73 @@
+{
+  "pipeline_version": "1.0",
+  "dataset_dir": "output\\final_dataset\\dataset",
+  "n_samples": 98,
+  "n_images": 98,
+  "image_size": 64,
+  "raw_features": 4096,
+  "n_components": 16,
+  "slice_mode": "mid",
+  "comparison": {
+    "PCA": {
+      "n_components": 16,
+      "variance_explained": 0.313565731048584,
+      "reconstruction_mse": 0.6864342093467712
+    },
+    "RP_gaussian": {
+      "n_components": 16,
+      "distance_preservation_mean": 1.0216580629348755,
+      "distance_preservation_std": 0.17838767170906067
+    },
+    "RP_sparse": {
+      "n_components": 16,
+      "distance_preservation_mean": 0.9759015440940857,
+      "distance_preservation_std": 0.17839448153972626
+    }
+  },
+  "quantum_export": {
+    "pca": {
+      "file": "output\\final_dataset\\features_cleaned\\pca_quantum_ready.npz",
+      "n_qubits_needed": 16,
+      "encoding": "angle",
+      "feature_range": "[0, pi]"
+    },
+    "n_qubits": 16,
+    "encoding": "angle [0, pi]"
+  },
+  "label_keys": [
+    "BVTV",
+    "TbTh_um_p50",
+    "TbN_per_mm",
+    "TbSp_um_p50"
+  ],
+  "controllable_generator_params": [
+    "bvtv",
+    "tbth_um",
+    "tbn_per_mm",
+    "tbsp_um",
+    "base_sigma",
+    "aniso_ratio",
+    "rod_weight",
+    "plate_weight",
+    "sheet_q",
+    "proto_q_hi",
+    "proto_q_lo",
+    "proto_close_iters",
+    "skeleton_prune_lmin",
+    "reconnect_close_iters",
+    "radius_mode",
+    "radius_jitter",
+    "radius_smooth_sigma",
+    "radius_scale_hint",
+    "marrow_mean",
+    "bone_mean",
+    "solid_fill_sigma",
+    "noise_sd",
+    "round_sigma",
+    "warp_amp",
+    "warp_sigma",
+    "hessian_sigma",
+    "enforce_lcc",
+    "min_component_size"
+  ]
+}

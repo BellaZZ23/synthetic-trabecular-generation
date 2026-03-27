@@ -1,0 +1,71 @@
+{
+  "version": "v16",
+  "label": "sample_046",
+  "seed": 89,
+  "morphometrics": {
+    "BVTV": 0.24548168182373048,
+    "TbTh_um_p50": 78.0,
+    "TbTh_um_p90": 156.0,
+    "TbSp_um_p50": 281.23299948619115,
+    "TbSp_um_p90": 829.1513733933027,
+    "TbN_per_mm": 2.316074124252333,
+    "Euler": 270.0,
+    "ConnProxy": -269.0,
+    "n_components": 1,
+    "lcc_frac": 1.0
+  },
+  "targets": {
+    "bvtv_target": 0.2440264882642595,
+    "tbth_um_target": 121.34792864696448,
+    "tbn_target": 2.0109654197246476,
+    "tbsp_um_target": 0
+  },
+  "params": {
+    "ridge": {
+      "base_sigma": 4.219374804317842,
+      "warp_sigma": 14.0,
+      "warp_amp": 3.9236452092136638,
+      "hessian_sigma": 1.0036729685129502,
+      "ridge_strength": 1.0,
+      "proto_q_hi": 0.9173026335116201,
+      "proto_q_lo": 0.8269097311141163,
+      "proto_close_iters": 3,
+      "proto_open_iters": 0,
+      "proto_min_component": 250,
+      "use_skeleton": true,
+      "skeleton_prune_lmin": 6,
+      "reconnect_close_iters": 0,
+      "radius_mode": "branch",
+      "radius_jitter": 0.12333228395093981,
+      "radius_smooth_sigma": 3.0,
+      "radius_scale_hint": 1.0,
+      "prune_small_components": 0,
+      "aniso_ratio": 2.3908247852162887,
+      "rod_weight": 0.8965382007462402,
+      "plate_weight": 0.29725473153857246,
+      "coarse_weight": 0.5,
+      "medium_weight": 0.35,
+      "fine_weight": 0.15,
+      "sheet_q": 0.92,
+      "bridge_dilate_iters": 0,
+      "bridge_close_iters": 0
+    },
+    "gray": {
+      "write_gray": true,
+      "marrow_mean": 15.0,
+      "bone_mean": 240.0,
+      "solid_fill_sigma": 3.0,
+      "pve_sigma": 0.5,
+      "noise_sd": 3.0,
+      "bg_tex_sd": 1.0,
+      "unsharp": 0.6,
+      "unsharp_sigma": 0.8
+    }
+  },
+  "shape_zyx": [
+    80,
+    256,
+    256
+  ],
+  "voxel_um": 39.0
+}
