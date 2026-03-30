@@ -32,10 +32,10 @@ def main():
     Xs = StandardScaler().fit_transform(X)
     Z  = PCA(n_components=2).fit_transform(Xs)
 
-    # Outliers: distance from centroid > 2 std
+    # Outliers: distance from centroid > 1.5 std
     centroid  = Z.mean(axis=0)
     dists     = np.sqrt(((Z - centroid) ** 2).sum(axis=1))
-    threshold = dists.mean() + 2.0 * dists.std()
+    threshold = dists.mean() + 1.5 * dists.std()
 
     outlier_dir = dataset_dir.parent / "outliers_pca"
     outlier_dir.mkdir(exist_ok=True)
