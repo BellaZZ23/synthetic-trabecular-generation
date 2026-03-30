@@ -1,0 +1,121 @@
+{
+  "version": "v16",
+  "n": 20,
+  "optimal_params": {
+    "bvtv": 0.22,
+    "tbth_um": 180.0,
+    "base_sigma": 5.0,
+    "aniso_ratio": 3.0,
+    "warp_amp": 3.0,
+    "hessian_sigma": 1.4,
+    "proto_q_hi": 0.92,
+    "proto_q_lo": 0.84,
+    "proto_close_iters": 2,
+    "radius_jitter": 0.15,
+    "round_sigma": 0.7,
+    "rod_weight": 1.0,
+    "plate_weight": 0.0
+  },
+  "samples": [
+    {
+      "label": "sample_000",
+      "seed": 43,
+      "bvtv": 0.19032745361328124
+    },
+    {
+      "label": "sample_001",
+      "seed": 44,
+      "bvtv": 0.30445709228515627
+    },
+    {
+      "label": "sample_002",
+      "seed": 45,
+      "bvtv": 0.1500732421875
+    },
+    {
+      "label": "sample_003",
+      "seed": 46,
+      "bvtv": 0.20606231689453125
+    },
+    {
+      "label": "sample_004",
+      "seed": 47,
+      "bvtv": 0.29636077880859374
+    },
+    {
+      "label": "sample_005",
+      "seed": 48,
+      "bvtv": 0.29969635009765627
+    },
+    {
+      "label": "sample_006",
+      "seed": 49,
+      "bvtv": 0.195269775390625
+    },
+    {
+      "label": "sample_007",
+      "seed": 50,
+      "bvtv": 0.24001312255859375
+    },
+    {
+      "label": "sample_008",
+      "seed": 51,
+      "bvtv": 0.2194549560546875
+    },
+    {
+      "label": "sample_009",
+      "seed": 52,
+      "bvtv": 0.1296600341796875
+    },
+    {
+      "label": "sample_010",
+      "seed": 53,
+      "bvtv": 0.23229522705078126
+    },
+    {
+      "label": "sample_011",
+      "seed": 54,
+      "bvtv": 0.25341796875
+    },
+    {
+      "label": "sample_012",
+      "seed": 55,
+      "bvtv": 0.11492919921875
+    },
+    {
+      "label": "sample_013",
+      "seed": 56,
+      "bvtv": 0.15662689208984376
+    },
+    {
+      "label": "sample_014",
+      "seed": 57,
+      "bvtv": 0.29005279541015627
+    },
+    {
+      "label": "sample_015",
+      "seed": 58,
+      "bvtv": 0.16678619384765625
+    },
+    {
+      "label": "sample_016",
+      "seed": 59,
+      "bvtv": 0.24887237548828126
+    },
+    {
+      "label": "sample_017",
+      "seed": 60,
+      "bvtv": 0.17910919189453126
+    },
+    {
+      "label": "sample_018",
+      "seed": 61,
+      "bvtv": 0.1674835205078125
+    },
+    {
+      "label": "sample_019",
+      "seed": 62,
+      "bvtv": 0.17084197998046874
+    }
+  ]
+}
