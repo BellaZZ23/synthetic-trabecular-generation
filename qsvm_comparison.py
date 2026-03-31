@@ -21,7 +21,8 @@ from sklearn.metrics import (
     accuracy_score, f1_score, precision_score, recall_score,
     confusion_matrix,
 )
-from sklearn.preprocessing import MinMaxScaler, StratifiedShuffleSplit
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.model_selection import RepeatedStratifiedKFold, StratifiedShuffleSplit
 from sklearn.model_selection import RepeatedStratifiedKFold
 
 # ── Qiskit imports ──
