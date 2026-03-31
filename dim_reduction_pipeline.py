@@ -578,13 +578,26 @@ def main():
         print(f"\nWARNING: Only {X.shape[0]} images.")
         return
 
-    X_train, X_test, Y_train, Y_test, idx_train, idx_test = train_test_split(
-        X, Y, np.arange(X.shape[0]),
-        test_size=args.test_split, random_state=args.seed,
-    )
+    # FIX 7: Grouped split by sample name to prevent slice leakage.
+    # All slices from the same volume are kept in the same split.
+    sample_names   = np.array([info_item["sample"] for info_item in info])
+    unique_samples = np.unique(sample_names)
+    rng_split      = np.random.default_rng(args.seed)
+    shuffled       = rng_split.permutation(unique_samples)
+    n_test_samples = max(1, int(len(shuffled) * args.test_split))
+    test_set       = set(shuffled[:n_test_samples])
+    train_set      = set(shuffled[n_test_samples:])
+
+    train_mask = np.array([sample_names[i] in train_set for i in range(len(info))])
+    test_mask  = ~train_mask
+
+    X_train = X[train_mask];  X_test = X[test_mask]
+    Y_train = Y[train_mask];  Y_test = Y[test_mask]
+    idx_train = np.where(train_mask)[0]; idx_test = np.where(test_mask)[0]
     info_train = [info[i] for i in idx_train]
     info_test  = [info[i] for i in idx_test]
     gp_train   = [gen_params[i] for i in idx_train]
+    print(f"  Grouped split: {len(train_set)} train volumes, {len(test_set)} test volumes")
 
     print(f"\nTrain: {X_train.shape[0]}, Test: {X_test.shape[0]}")
 
