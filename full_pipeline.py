@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """
-full_pipeline.py  — v1.2
+full_pipeline.py  — v1.3
 Fixes applied:
-  Fix 2  : morphometrics measured BEFORE keep_largest_component (honest LCC)
+  Fix 1  : Joint morphometric target sampling from real VOI covariance structure
+  Fix 2  : Morphometrics measured BEFORE keep_largest_component (honest LCC)
+  Fix 3  : Anti-floor rejection — TbTh=78um (resolution floor) triggers retry
+  Fix 4  : TbSp-aware base_sigma — spacing target influences noise field scale
   Fix 13 : run_dim_reduction uses texture features, not raw pixels
 """
 from __future__ import annotations
@@ -75,6 +78,15 @@ GATE_BVTV_REL_ERR = 0.15
 GATE_LCC_MIN      = 0.85
 GATE_MAX_ATTEMPTS = 8
 
+# FIX 3: resolution floor — at 39µm voxel, 2 voxels = 78µm
+# Reject samples that land within 2µm of the floor (quantised artefact)
+GATE_TBTH_FLOOR_UM = 80.0   # reject if TbTh < this (floor artefact)
+GATE_TBTH_MAX_UM   = 350.0  # reject if TbTh > this (blob)
+
+# FIX 4: TbSp → base_sigma mapping
+# Higher spacing = larger noise field scale (fewer, more separated struts)
+TBSP_SIGMA_SCALE = 0.004    # base_sigma += TBSP_SIGMA_SCALE * tbsp_um_target
+
 
 # ═══════════════════════════════════════════════════════════
 #  TEXTURE FEATURE EXTRACTION  (Fix 13)
@@ -122,6 +134,99 @@ def _extract_texture_features(sl: np.ndarray, image_size: int = 64) -> np.ndarra
     stat    = _extract_statistical_features(resized)
     glcm    = _extract_glcm_features(img_u8)
     return np.concatenate([stat, glcm]) if glcm.size > 0 else stat
+
+
+# ═══════════════════════════════════════════════════════════
+#  FIX 1: JOINT TARGET SAMPLER
+# ═══════════════════════════════════════════════════════════
+
+def build_joint_sampler(voi_dirs: list[str], voxel_um: float) -> dict:
+    """
+    FIX 1: Load real VOI target JSON files and fit a multivariate Gaussian
+    over [BVTV, TbTh_um, TbSp_um] jointly.
+
+    This preserves the real covariance structure between morphometrics
+    instead of sampling them independently.
+
+    Returns dict with 'mu', 'cov', 'raw_targets', and per-variable bounds.
+    """
+    bvtvs, tbths, tbsps = [], [], []
+
+    for d in voi_dirs:
+        for f in sorted(Path(d).glob("*_targets.json")):
+            with open(f) as fh:
+                data = json.load(fh)
+
+            # Apply the same voxel correction as load_all_voi_targets
+            rv = 1.0
+            vz = data.get("voxel_um_zyx")
+            if vz and len(vz) >= 1:
+                rv = float(vz[0])
+            c = voxel_um / max(1.0, rv)
+
+            bv   = float(data.get("BVTV", 0))
+            tbth = float(data.get("TbTh_um_p90", data.get("TbTh_um_p50", 0))) * c * 2.0
+            tbsp = float(data.get("TbSp_um_p50", 0)) * c * 2.0
+
+            # Only keep biologically plausible rows
+            if 0.05 <= bv <= 0.50 and tbth >= 80 and tbsp >= 150:
+                bvtvs.append(bv)
+                tbths.append(tbth)
+                tbsps.append(tbsp)
+
+    if len(bvtvs) < 3:
+        print(f"  WARNING: Only {len(bvtvs)} valid VOI targets — falling back to independent sampling")
+        return None
+
+    raw = np.column_stack([bvtvs, tbths, tbsps])  # (n, 3)
+    mu  = raw.mean(axis=0)
+    cov = np.cov(raw.T)
+
+    # Add small regularisation to ensure positive-definite covariance
+    cov += np.eye(3) * 1e-6
+
+    print(f"  FIX 1: Joint sampler fitted on {len(bvtvs)} real VOI targets")
+    print(f"    BV/TV:  mean={mu[0]:.3f}  range=[{raw[:,0].min():.3f}, {raw[:,0].max():.3f}]")
+    print(f"    TbTh:   mean={mu[1]:.1f}um range=[{raw[:,1].min():.1f}, {raw[:,1].max():.1f}]um")
+    print(f"    TbSp:   mean={mu[2]:.1f}um range=[{raw[:,2].min():.1f}, {raw[:,2].max():.1f}]um")
+
+    return {
+        "mu":          mu,
+        "cov":         cov,
+        "raw_targets": raw,
+        "n_sources":   len(bvtvs),
+    }
+
+
+def sample_joint_targets(
+    sampler: dict | None,
+    rng: np.random.Generator,
+    bvtv_centre: float,
+    tbth_centre: float,
+    voxel_um: float,
+) -> tuple[float, float, float]:
+    """
+    FIX 1: Sample (bvtv, tbth, tbsp) from joint distribution.
+    Falls back to independent sampling if no sampler available.
+    """
+    if sampler is not None:
+        # Sample from multivariate Gaussian fitted to real VOI data
+        for _ in range(20):  # rejection sampling to stay in bounds
+            s = rng.multivariate_normal(sampler["mu"], sampler["cov"])
+            bv, tbth, tbsp = float(s[0]), float(s[1]), float(s[2])
+            if (0.12 <= bv   <= 0.35 and
+                110  <= tbth <= 300  and
+                150  <= tbsp <= 800):
+                return bv, tbth, tbsp
+        # Fallback if rejection loop exhausted
+        s    = sampler["mu"]
+        return float(s[0]), float(s[1]), float(s[2])
+    else:
+        # Original independent sampling (fallback)
+        bv   = float(np.clip(rng.normal(bvtv_centre, 0.06), 0.12, 0.32))
+        tbth = float(np.clip(rng.normal(tbth_centre, 30.0), 110.0, 260.0))
+        tbsp = float(np.clip(rng.normal(400.0, 80.0), 150.0, 700.0))
+        return bv, tbth, tbsp
 
 
 # ═══════════════════════════════════════════════════════════
@@ -259,25 +364,39 @@ def run_optimization(ref_path, n_trials, outdir):
 # ═══════════════════════════════════════════════════════════
 
 def _validate_sample(morph_raw: dict, bvtv_target: float) -> tuple[bool, str]:
-    """FIX 2: Validate against RAW morphometrics (before keep_largest_component)."""
+    """
+    FIX 2: Validate against RAW morphometrics (before keep_largest_component).
+    FIX 3: Reject TbTh at resolution floor (78µm artefact).
+    """
     bvtv = morph_raw.get("BVTV", 0.0)
     lcc  = morph_raw.get("lcc_frac", 0.0)
     tbth = morph_raw.get("TbTh_um_p50", 0.0)
     tbn  = morph_raw.get("TbN_per_mm", 0.0)
+
     if bvtv_target > 0:
         rel_err = abs(bvtv - bvtv_target) / bvtv_target
         if rel_err > GATE_BVTV_REL_ERR:
             return False, f"BV/TV error {rel_err*100:.1f}% (measured={bvtv:.3f}, target={bvtv_target:.3f})"
     if lcc < GATE_LCC_MIN:
         return False, f"LCC_raw={lcc:.3f} < {GATE_LCC_MIN} (fragmented before cleanup)"
-    if bvtv < 0.05: return False, f"BV/TV={bvtv:.3f} near zero"
-    if bvtv > 0.60: return False, f"BV/TV={bvtv:.3f} near one"
-    if tbth < 78.0 or tbth > 350.0: return False, f"TbTh={tbth:.1f}um out of range [78,350]"
-    if tbn  < 0.8  or tbn  > 4.0:   return False, f"TbN={tbn:.2f}/mm out of range [0.8,4.0]"
+    if bvtv < 0.05:
+        return False, f"BV/TV={bvtv:.3f} near zero (skeleton collapsed)"
+    if bvtv > 0.60:
+        return False, f"BV/TV={bvtv:.3f} near one (over-thickened blob)"
+
+    # FIX 3: Hard reject on resolution floor
+    if tbth < GATE_TBTH_FLOOR_UM:
+        return False, (f"TbTh={tbth:.1f}um below floor threshold {GATE_TBTH_FLOOR_UM}um "
+                       f"(resolution artefact — 2-voxel strut)")
+    if tbth > GATE_TBTH_MAX_UM:
+        return False, f"TbTh={tbth:.1f}um above max {GATE_TBTH_MAX_UM}um (blob)"
+    if tbn < 0.8 or tbn > 4.0:
+        return False, f"TbN={tbn:.2f}/mm out of range [0.8, 4.0]"
     return True, ""
 
 
 def _build_rp_kw(best_params: dict, bs: float) -> dict:
+    """Build RidgeParams kwargs — base_sigma already incorporates FIX 4."""
     rp_kw = dict(
         base_sigma=bs, warp_sigma=14.0,
         warp_amp=float(best_params.get("warp_amp", 3.0)),
@@ -303,10 +422,20 @@ def _build_rp_kw(best_params: dict, bs: float) -> dict:
     return rp_kw
 
 
-def generate_dataset(best_params, args, outdir):
+def generate_dataset(best_params, args, outdir, joint_sampler=None):
+    """
+    Generate N samples.
+    Fix 1: Uses joint_sampler if available (correlated morphometric targets).
+    Fix 2: Validates on raw morphology before keep_largest_component.
+    Fix 3: Rejects TbTh floor artefacts.
+    Fix 4: base_sigma modulated by TbSp target.
+    """
     print(f"\n{'='*60}")
     print(f"  STEP 2: GENERATE {args.num_samples} SAMPLES ({args.xy}x{args.xy}x{args.z})")
-    print(f"  FIX 2: Validation on RAW morphology (before keep_largest_component)")
+    print(f"  Fix 1: {'Joint VOI sampler' if joint_sampler else 'Independent sampler (fallback)'}")
+    print(f"  Fix 2: Validation on RAW morphology")
+    print(f"  Fix 3: TbTh floor rejection < {GATE_TBTH_FLOOR_UM}um")
+    print(f"  Fix 4: TbSp-aware base_sigma (scale={TBSP_SIGMA_SCALE})")
     print(f"{'='*60}")
 
     dataset_dir = outdir / "dataset"
@@ -323,13 +452,20 @@ def generate_dataset(best_params, args, outdir):
                     bone_mean=240.0, noise_sd=3.0, bg_tex_sd=1.0)
 
     for i in range(args.num_samples):
-        base_seed   = args.seed + i + 1
-        rng_sample  = np.random.default_rng(base_seed + 99999)
-        bvtv_target = float(np.clip(rng_sample.normal(bvtv_centre, 0.06), 0.12, 0.32))
-        tbth_target = float(np.clip(rng_sample.normal(tbth_centre, 30.0), 110.0, 260.0))
-        tbn_target  = bvtv_target / (tbth_target / 1000.0)
-        br          = tbth_um_to_radius_vox(tbth_target, voxel_um)
-        bs          = max(bs_base, 4.5)
+        base_seed  = args.seed + i + 1
+        rng_sample = np.random.default_rng(base_seed + 99999)
+
+        # FIX 1: Joint target sampling
+        bvtv_target, tbth_target, tbsp_target = sample_joint_targets(
+            joint_sampler, rng_sample, bvtv_centre, tbth_centre, voxel_um)
+
+        tbn_target = bvtv_target / (tbth_target / 1000.0)
+        br         = tbth_um_to_radius_vox(tbth_target, voxel_um)
+
+        # FIX 4: TbSp-aware base_sigma
+        # Wider spacing → larger noise field → coarser trabecular network
+        bs_tbsp = bs_base + TBSP_SIGMA_SCALE * tbsp_target
+        bs      = float(max(bs_tbsp, 4.5))
 
         sample_dir = dataset_dir / f"sample_{i:03d}"
         sample_dir.mkdir(parents=True, exist_ok=True)
@@ -354,6 +490,8 @@ def generate_dataset(best_params, args, outdir):
 
             # FIX 2: measure BEFORE keep_largest_component
             m_raw = measure_all_morphometrics(b, voxel_um)
+
+            # FIX 3: _validate_sample now includes floor rejection
             ok, reason = _validate_sample(m_raw, bvtv_target)
 
             if ok:
@@ -365,7 +503,9 @@ def generate_dataset(best_params, args, outdir):
                 passed      = True
                 if attempt > 0:
                     n_retries += attempt
-                    print(f"    [sample_{i:03d}] passed on attempt {attempt+1}")
+                    print(f"    [sample_{i:03d}] passed on attempt {attempt+1} "
+                          f"(TbTh={m_raw.get('TbTh_um_p50',0):.0f}um "
+                          f"LCC_raw={m_raw.get('lcc_frac',0):.3f})")
                 break
             else:
                 print(f"    [sample_{i:03d}] attempt {attempt+1} rejected: {reason}")
@@ -387,14 +527,16 @@ def generate_dataset(best_params, args, outdir):
         save_png_u8(gray[Z//2], sample_dir/"gray_mid.png")
 
         tgt = {"bvtv_target": bvtv_target, "tbth_um_target": tbth_target,
-               "tbn_target": tbn_target, "tbsp_um_target": 0}
+               "tbn_target": tbn_target, "tbsp_um_target": tbsp_target}
         rp_saved = RidgeParams(**_build_rp_kw(best_params, bs))
         met = {
             "version": GENERATOR_VERSION, "label": f"sample_{i:03d}", "seed": seed,
-            "morphometrics":     morph_clean,   # post-LCC (for downstream use)
-            "morphometrics_raw": morph_raw,     # FIX 2: pre-LCC (honest measurement)
+            "morphometrics":     morph_clean,
+            "morphometrics_raw": morph_raw,   # FIX 2: honest pre-LCC measurement
             "targets": tgt,
-            "params": {"ridge": asdict(rp_saved), "gray": asdict(gp)},
+            "params": {"ridge": asdict(rp_saved), "gray": asdict(gp),
+                       "bs_tbsp_adjusted": bs,     # FIX 4: log adjusted sigma
+                       "tbsp_target": tbsp_target},
             "shape_zyx": list(shape), "voxel_um": voxel_um,
         }
         save_json(met, sample_dir/"metrics.json")
@@ -404,20 +546,37 @@ def generate_dataset(best_params, args, outdir):
             elapsed = time.time() - t0
             eta     = elapsed / (i+1) * (args.num_samples - i - 1)
             print(f"    [{i+1}/{args.num_samples}] BV/TV={morph_clean['BVTV']:.3f} "
+                  f"TbTh={morph_clean['TbTh_um_p50']:.0f}um "
+                  f"TbSp={morph_clean['TbSp_um_p50']:.0f}um "
+                  f"bs={bs:.2f} "
                   f"LCC_raw={morph_raw['lcc_frac']:.3f} "
                   f"| {elapsed:.0f}s, ~{eta:.0f}s remaining")
 
     n_saved = len(all_metrics)
     print(f"\n  Generated {n_saved} valid samples ({n_skipped} skipped, {n_retries} retries)")
+
+    # Report TbTh distribution to confirm floor fix is working
+    if all_metrics:
+        tbths = [m["morphometrics"]["TbTh_um_p50"] for m in all_metrics]
+        print(f"  TbTh distribution: min={min(tbths):.0f}um mean={np.mean(tbths):.0f}um max={max(tbths):.0f}um")
+        n_floor = sum(1 for t in tbths if t < GATE_TBTH_FLOOR_UM + 5)
+        print(f"  Samples near floor (<{GATE_TBTH_FLOOR_UM+5:.0f}um): {n_floor} "
+              f"({100*n_floor/max(n_saved,1):.1f}%) — FIX 3 target: 0%")
+
     save_json({
         "version": GENERATOR_VERSION, "n": n_saved,
         "n_skipped": n_skipped, "n_retries": n_retries,
+        "fix1_joint_sampler": joint_sampler is not None,
         "optimal_params": best_params,
         "samples": [{"label": m["label"], "seed": m["seed"],
                      "bvtv": m["morphometrics"]["BVTV"],
+                     "tbth": m["morphometrics"]["TbTh_um_p50"],
+                     "tbsp": m["morphometrics"]["TbSp_um_p50"],
                      "lcc_raw": m["morphometrics_raw"]["lcc_frac"]} for m in all_metrics],
     }, dataset_dir/"dataset_manifest.json")
-    print(f"  Total time: {time.time()-t0:.0f}s ({(time.time()-t0)/max(n_saved,1):.1f}s/sample)")
+
+    total = time.time() - t0
+    print(f"  Total time: {total:.0f}s ({total/max(n_saved,1):.1f}s/sample)")
     return dataset_dir, all_metrics
 
 
@@ -428,8 +587,7 @@ def generate_dataset(best_params, args, outdir):
 def run_dim_reduction(dataset_dir, outdir, n_components=16, image_size=64, seed=42):
     """FIX 13: Uses texture features (GLCM + stats) instead of raw pixels."""
     print(f"\n{'='*60}")
-    print(f"  STEP 3: DIMENSIONALITY REDUCTION")
-    print(f"  FIX 13: texture features (GLCM + stats), n_components={n_components}")
+    print(f"  STEP 3: DIMENSIONALITY REDUCTION (texture features, n={n_components})")
     print(f"{'='*60}")
 
     features_dir = outdir / "features"
@@ -463,14 +621,11 @@ def run_dim_reduction(dataset_dir, outdir, n_components=16, image_size=64, seed=
     print(f"  Train: {X_tr.shape[0]}, Test: {X_te.shape[0]}")
 
     results = {}
-
     scaler   = StandardScaler()
-    X_tr_s   = scaler.fit_transform(X_tr)
-    X_te_s   = scaler.transform(X_te)
+    X_tr_s   = scaler.fit_transform(X_tr); X_te_s = scaler.transform(X_te)
     nc       = min(n_components, X_tr_s.shape[0], X_tr_s.shape[1])
     pca      = PCA(n_components=nc, random_state=seed)
-    Z_tr_pca = pca.fit_transform(X_tr_s)
-    Z_te_pca = pca.transform(X_te_s)
+    Z_tr_pca = pca.fit_transform(X_tr_s); Z_te_pca = pca.transform(X_te_s)
     ev = pca.explained_variance_ratio_; cv = np.cumsum(ev)
     print(f"\n  PCA: {nc} components, {cv[-1]*100:.1f}% variance explained")
     results["PCA"] = {"Z_train": Z_tr_pca, "Z_test": Z_te_pca,
@@ -533,17 +688,24 @@ def run_dim_reduction(dataset_dir, outdir, n_components=16, image_size=64, seed=
 # ═══════════════════════════════════════════════════════════
 
 def generate_report(outdir, opt_result, best_params, importances,
-                    dataset_metrics, reduction_result, args):
+                    dataset_metrics, reduction_result, args, joint_sampler):
     print(f"\n{'='*60}\n  STEP 4: FINAL REPORT\n{'='*60}")
     report = {
-        "pipeline_version": "1.2",
-        "fixes_applied": ["fix2_honest_lcc", "fix13_texture_features"],
+        "pipeline_version": "1.3",
+        "fixes_applied": ["fix1_joint_sampling", "fix2_honest_lcc",
+                          "fix3_antifloor", "fix4_tbsp_sigma", "fix13_texture_features"],
         "generator_version": GENERATOR_VERSION,
         "timestamp": datetime.now().isoformat(),
         "validation_gate": {
             "validates_on": "raw_morphology_before_keep_largest_component",
             "bvtv_rel_err_max": GATE_BVTV_REL_ERR,
             "lcc_min": GATE_LCC_MIN,
+            "tbth_floor_um": GATE_TBTH_FLOOR_UM,
+            "tbsp_sigma_scale": TBSP_SIGMA_SCALE,
+        },
+        "joint_sampler": {
+            "used": joint_sampler is not None,
+            "n_sources": joint_sampler["n_sources"] if joint_sampler else 0,
         },
         "generation": {
             "num_samples_requested": args.num_samples,
@@ -555,16 +717,17 @@ def generate_report(outdir, opt_result, best_params, importances,
     }
     with open(outdir/"pipeline_report.json", "w") as f:
         json.dump(report, f, indent=2, default=str)
+
     print(f"  Generated: {len(dataset_metrics)}/{args.num_samples} samples")
     if dataset_metrics:
         bvtvs    = [m["morphometrics"]["BVTV"] for m in dataset_metrics]
+        tbths    = [m["morphometrics"]["TbTh_um_p50"] for m in dataset_metrics]
+        tbsps    = [m["morphometrics"]["TbSp_um_p50"] for m in dataset_metrics]
         lcc_raws = [m["morphometrics_raw"]["lcc_frac"] for m in dataset_metrics]
-        print(f"  BV/TV range: [{min(bvtvs):.3f}, {max(bvtvs):.3f}]")
+        print(f"  BV/TV: [{min(bvtvs):.3f}, {max(bvtvs):.3f}] mean={np.mean(bvtvs):.3f}")
+        print(f"  TbTh:  [{min(tbths):.0f}, {max(tbths):.0f}]um mean={np.mean(tbths):.0f}um")
+        print(f"  TbSp:  [{min(tbsps):.0f}, {max(tbsps):.0f}]um mean={np.mean(tbsps):.0f}um")
         print(f"  LCC_raw mean: {np.mean(lcc_raws):.3f} (honest, pre-cleanup)")
-    if reduction_result:
-        for k, v in reduction_result.get("results", {}).items():
-            ve = v.get("variance_explained")
-            if ve: print(f"  {k}: {ve*100:.1f}% variance (texture features)")
     print(f"\n  Report: {outdir/'pipeline_report.json'}")
 
 
@@ -593,10 +756,16 @@ def main():
     total_t0 = time.time()
 
     print(f"\n{'#'*60}")
-    print(f"  FULL PIPELINE v1.2 — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-    print(f"  Fixes: honest LCC (Fix 2) + texture features (Fix 13)")
+    print(f"  FULL PIPELINE v1.3 — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    print(f"  Fixes: joint sampling, honest LCC, anti-floor, TbSp-sigma, texture")
     print(f"  Generator: {GENERATOR_VERSION}")
     print(f"{'#'*60}")
+
+    # FIX 1: Build joint sampler from real VOI data if available
+    joint_sampler = None
+    if args.voi_dirs:
+        print(f"\n  Building joint target sampler from {len(args.voi_dirs)} VOI dir(s)...")
+        joint_sampler = build_joint_sampler(args.voi_dirs, args.voxel_um)
 
     importances = {}
     if args.params_json:
@@ -617,12 +786,16 @@ def main():
         opt_result = {"best_loss": None, "best_params": best_params}
         with open(outdir/"optimization_result.json") as f: opt_result = json.load(f)
 
-    dataset_dir, dataset_metrics = generate_dataset(best_params, args, outdir)
-    reduction_result = run_dim_reduction(dataset_dir, outdir,
-                                          n_components=args.n_components,
-                                          image_size=args.image_size, seed=args.seed)
+    dataset_dir, dataset_metrics = generate_dataset(
+        best_params, args, outdir, joint_sampler=joint_sampler)
+
+    reduction_result = run_dim_reduction(
+        dataset_dir, outdir,
+        n_components=args.n_components,
+        image_size=args.image_size, seed=args.seed)
+
     generate_report(outdir, opt_result, best_params, importances,
-                    dataset_metrics, reduction_result, args)
+                    dataset_metrics, reduction_result, args, joint_sampler)
 
     print(f"\n{'#'*60}")
     print(f"  PIPELINE COMPLETE — {(time.time()-total_t0)/60:.1f} minutes total")
