@@ -1,8 +1,8 @@
 {
   "pipeline_version": "1.0",
   "dataset_dir": "output\\final_dataset_200\\dataset",
-  "n_samples": 200,
-  "n_images": 200,
+  "n_samples": 177,
+  "n_images": 177,
   "image_size": 64,
   "raw_features": 4096,
   "n_components": 16,
@@ -10,18 +10,18 @@
   "comparison": {
     "PCA": {
       "n_components": 16,
-      "variance_explained": 0.23364481329917908,
-      "reconstruction_mse": 0.7663551568984985
+      "variance_explained": 0.2330525666475296,
+      "reconstruction_mse": 0.7669475078582764
     },
     "RP_gaussian": {
       "n_components": 16,
-      "distance_preservation_mean": 1.0075592994689941,
-      "distance_preservation_std": 0.16631504893302917
+      "distance_preservation_mean": 1.0109128952026367,
+      "distance_preservation_std": 0.17513564229011536
     },
     "RP_sparse": {
       "n_components": 16,
-      "distance_preservation_mean": 0.9476272463798523,
-      "distance_preservation_std": 0.1645793318748474
+      "distance_preservation_mean": 0.9711742997169495,
+      "distance_preservation_std": 0.16590189933776855
     }
   },
   "quantum_export": {
