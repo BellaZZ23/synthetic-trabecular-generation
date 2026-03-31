@@ -80,7 +80,7 @@ GATE_MAX_ATTEMPTS = 8
 
 # FIX 3: resolution floor — at 39µm voxel, 2 voxels = 78µm
 # Reject samples that land within 2µm of the floor (quantised artefact)
-GATE_TBTH_FLOOR_UM = 80.0   # reject if TbTh < this (floor artefact)
+GATE_TBTH_FLOOR_UM = 0.0    # disabled — 78um is physical minimum at 39um voxel, floor rejection too aggressive
 GATE_TBTH_MAX_UM   = 350.0  # reject if TbTh > this (blob)
 
 # FIX 4: TbSp → base_sigma mapping
