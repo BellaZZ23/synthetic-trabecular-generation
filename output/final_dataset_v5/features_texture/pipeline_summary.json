@@ -1,0 +1,44 @@
+{
+  "pipeline_version": "2.0",
+  "feature_type": "texture",
+  "dataset_dir": "output\\final_dataset_v5\\dataset",
+  "n_samples": 359,
+  "n_images": 359,
+  "image_size": 64,
+  "raw_features": 43,
+  "n_components": 16,
+  "slice_mode": "mid",
+  "comparison": {
+    "PCA": {
+      "n_components": 16,
+      "variance_explained": 0.9866136312484741,
+      "reconstruction_mse": 0.01307511143386364
+    },
+    "RP_gaussian": {
+      "n_components": 16,
+      "distance_preservation_mean": 1.0592041015625,
+      "distance_preservation_std": 0.13253962993621826
+    },
+    "RP_sparse": {
+      "n_components": 16,
+      "distance_preservation_mean": 1.040562629699707,
+      "distance_preservation_std": 0.11800768226385117
+    }
+  },
+  "quantum_export": {
+    "pca": {
+      "file": "output\\final_dataset_v5\\features_texture\\pca_quantum_ready.npz",
+      "n_qubits_needed": 16,
+      "encoding": "angle",
+      "feature_range": "[0, pi]"
+    },
+    "n_qubits": 16,
+    "encoding": "angle [0, pi]"
+  },
+  "label_keys": [
+    "BVTV",
+    "TbTh_um_p50",
+    "TbN_per_mm",
+    "TbSp_um_p50"
+  ]
+}

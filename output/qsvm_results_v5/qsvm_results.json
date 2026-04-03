@@ -1,0 +1,156 @@
+{
+  "pipeline_version": "1.1",
+  "fix12_applied": "RepeatedStratifiedKFold for classical SVM",
+  "task": "classify-bvtv",
+  "n_qubits": 8,
+  "feature_map": "ZZ",
+  "reps": 2,
+  "cv_folds": 5,
+  "cv_repeats": 5,
+  "results": [
+    {
+      "feature_source": "pca",
+      "classifier_type": "classical",
+      "accuracy": 0.9532707355242566,
+      "accuracy_std": 0.027725839163536665,
+      "f1_score": 0.9532326441655679,
+      "f1_std": 0.027750580785455663,
+      "precision": 0.9544594419045508,
+      "recall": 0.9532707355242566,
+      "train_time_s": 0.006360292434692383,
+      "kernel_time_s": null,
+      "cv_type": "RepeatedStratifiedKFold(5x5)",
+      "n_evaluations": 25,
+      "class_names": [
+        "sparse",
+        "dense"
+      ]
+    },
+    {
+      "feature_source": "pca",
+      "classifier_type": "quantum",
+      "accuracy": 0.9305555555555556,
+      "accuracy_std": null,
+      "f1_score": 0.9305421570519005,
+      "f1_std": null,
+      "precision": 0.9308880308880307,
+      "recall": 0.9305555555555556,
+      "train_time_s": 0.013091802597045898,
+      "kernel_time_s": 5381.450315237045,
+      "cv_type": "single stratified split (CV too slow for quantum)",
+      "n_evaluations": null,
+      "class_names": [
+        "sparse",
+        "dense"
+      ]
+    },
+    {
+      "feature_source": "rp_gaussian",
+      "classifier_type": "classical",
+      "accuracy": 0.9615571205007825,
+      "accuracy_std": 0.023715189469488494,
+      "f1_score": 0.9615204583966594,
+      "f1_std": 0.023755787918412145,
+      "precision": 0.9626495522416818,
+      "recall": 0.9615571205007825,
+      "train_time_s": 0.006592140197753906,
+      "kernel_time_s": null,
+      "cv_type": "RepeatedStratifiedKFold(5x5)",
+      "n_evaluations": 25,
+      "class_names": [
+        "sparse",
+        "dense"
+      ]
+    },
+    {
+      "feature_source": "rp_gaussian",
+      "classifier_type": "quantum",
+      "accuracy": 0.8888888888888888,
+      "accuracy_std": null,
+      "f1_score": 0.8888888888888888,
+      "f1_std": null,
+      "precision": 0.8888888888888888,
+      "recall": 0.8888888888888888,
+      "train_time_s": 0.006215572357177734,
+      "kernel_time_s": 5162.395302534103,
+      "cv_type": "single stratified split (CV too slow for quantum)",
+      "n_evaluations": null,
+      "class_names": [
+        "sparse",
+        "dense"
+      ]
+    },
+    {
+      "feature_source": "rp_sparse",
+      "classifier_type": "classical",
+      "accuracy": 0.9565492957746479,
+      "accuracy_std": 0.028447497542455426,
+      "f1_score": 0.956443976157749,
+      "f1_std": 0.02861257670701222,
+      "precision": 0.958899247044708,
+      "recall": 0.9565492957746479,
+      "train_time_s": 0.00424081802368164,
+      "kernel_time_s": null,
+      "cv_type": "RepeatedStratifiedKFold(5x5)",
+      "n_evaluations": 25,
+      "class_names": [
+        "sparse",
+        "dense"
+      ]
+    },
+    {
+      "feature_source": "rp_sparse",
+      "classifier_type": "quantum",
+      "accuracy": 0.9305555555555556,
+      "accuracy_std": null,
+      "f1_score": 0.9305421570519005,
+      "f1_std": null,
+      "precision": 0.9308880308880307,
+      "recall": 0.9305555555555556,
+      "train_time_s": 0.0,
+      "kernel_time_s": 5147.930611133575,
+      "cv_type": "single stratified split (CV too slow for quantum)",
+      "n_evaluations": null,
+      "class_names": [
+        "sparse",
+        "dense"
+      ]
+    },
+    {
+      "feature_source": "morphometric",
+      "classifier_type": "classical",
+      "accuracy": 0.9581924882629107,
+      "accuracy_std": 0.018557597975819632,
+      "f1_score": 0.9581667831945744,
+      "f1_std": 0.018570177837812552,
+      "precision": 0.9592890522391242,
+      "recall": 0.9581924882629107,
+      "train_time_s": 0.0032365036010742186,
+      "kernel_time_s": null,
+      "cv_type": "RepeatedStratifiedKFold(5x5)",
+      "n_evaluations": 25,
+      "class_names": [
+        "sparse",
+        "dense"
+      ]
+    },
+    {
+      "feature_source": "morphometric",
+      "classifier_type": "quantum",
+      "accuracy": 0.9861111111111112,
+      "accuracy_std": null,
+      "f1_score": 0.98610843141038,
+      "f1_std": null,
+      "precision": 0.9864864864864865,
+      "recall": 0.9861111111111112,
+      "train_time_s": 0.01841568946838379,
+      "kernel_time_s": 2277.211436986923,
+      "cv_type": "single stratified split (CV too slow for quantum)",
+      "n_evaluations": null,
+      "class_names": [
+        "sparse",
+        "dense"
+      ]
+    }
+  ]
+}

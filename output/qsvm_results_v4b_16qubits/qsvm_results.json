@@ -1,0 +1,144 @@
+{
+  "pipeline_version": "1.1",
+  "fix12_applied": "RepeatedStratifiedKFold for classical SVM",
+  "task": "classify-bvtv",
+  "n_qubits": 16,
+  "feature_map": "ZZ",
+  "reps": 2,
+  "cv_folds": 5,
+  "cv_repeats": 5,
+  "results": [
+    {
+      "feature_source": "pca",
+      "classifier_type": "classical",
+      "accuracy": 0.9383088749126485,
+      "accuracy_std": 0.028233230214702754,
+      "f1_score": 0.9382313956403479,
+      "f1_std": 0.028288879886927725,
+      "precision": 0.9400387067196609,
+      "recall": 0.9383088749126485,
+      "train_time_s": 0.003720226287841797,
+      "kernel_time_s": null,
+      "cv_type": "RepeatedStratifiedKFold(5x5)",
+      "n_evaluations": 25,
+      "class_names": [
+        "sparse",
+        "dense"
+      ]
+    },
+    {
+      "feature_source": "pca",
+      "classifier_type": "quantum",
+      "accuracy": null,
+      "accuracy_std": null,
+      "f1_score": null,
+      "f1_std": null,
+      "precision": null,
+      "recall": null,
+      "train_time_s": null,
+      "kernel_time_s": null,
+      "cv_type": null,
+      "n_evaluations": null,
+      "class_names": null
+    },
+    {
+      "feature_source": "rp_gaussian",
+      "classifier_type": "classical",
+      "accuracy": 0.9501607267645003,
+      "accuracy_std": 0.020956178230846143,
+      "f1_score": 0.9501007827958634,
+      "f1_std": 0.02096921451126069,
+      "precision": 0.9522371684317033,
+      "recall": 0.9501607267645003,
+      "train_time_s": 0.005511312484741211,
+      "kernel_time_s": null,
+      "cv_type": "RepeatedStratifiedKFold(5x5)",
+      "n_evaluations": 25,
+      "class_names": [
+        "sparse",
+        "dense"
+      ]
+    },
+    {
+      "feature_source": "rp_gaussian",
+      "classifier_type": "quantum",
+      "accuracy": null,
+      "accuracy_std": null,
+      "f1_score": null,
+      "f1_std": null,
+      "precision": null,
+      "recall": null,
+      "train_time_s": null,
+      "kernel_time_s": null,
+      "cv_type": null,
+      "n_evaluations": null,
+      "class_names": null
+    },
+    {
+      "feature_source": "rp_sparse",
+      "classifier_type": "classical",
+      "accuracy": 0.9479524807826694,
+      "accuracy_std": 0.026279695431427552,
+      "f1_score": 0.9478757883867879,
+      "f1_std": 0.02635580086821244,
+      "precision": 0.949927600638596,
+      "recall": 0.9479524807826694,
+      "train_time_s": 0.0049400138854980465,
+      "kernel_time_s": null,
+      "cv_type": "RepeatedStratifiedKFold(5x5)",
+      "n_evaluations": 25,
+      "class_names": [
+        "sparse",
+        "dense"
+      ]
+    },
+    {
+      "feature_source": "rp_sparse",
+      "classifier_type": "quantum",
+      "accuracy": null,
+      "accuracy_std": null,
+      "f1_score": null,
+      "f1_std": null,
+      "precision": null,
+      "recall": null,
+      "train_time_s": null,
+      "kernel_time_s": null,
+      "cv_type": null,
+      "n_evaluations": null,
+      "class_names": null
+    },
+    {
+      "feature_source": "morphometric",
+      "classifier_type": "classical",
+      "accuracy": 0.9532075471698114,
+      "accuracy_std": 0.02826950205215053,
+      "f1_score": 0.9531792481370729,
+      "f1_std": 0.028285459260803298,
+      "precision": 0.9543414771546196,
+      "recall": 0.9532075471698114,
+      "train_time_s": 0.0058179950714111325,
+      "kernel_time_s": null,
+      "cv_type": "RepeatedStratifiedKFold(5x5)",
+      "n_evaluations": 25,
+      "class_names": [
+        "sparse",
+        "dense"
+      ]
+    },
+    {
+      "feature_source": "morphometric",
+      "classifier_type": "quantum",
+      "accuracy": null,
+      "accuracy_std": null,
+      "f1_score": null,
+      "f1_std": null,
+      "precision": null,
+      "recall": null,
+      "train_time_s": null,
+      "kernel_time_s": null,
+      "cv_type": null,
+      "n_evaluations": null,
+      "class_names": null
+    }
+  ]
+}

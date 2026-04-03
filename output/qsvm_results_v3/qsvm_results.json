@@ -1,0 +1,216 @@
+{
+  "task": "classify-bvtv",
+  "n_qubits": 8,
+  "feature_map": "ZZ",
+  "reps": 2,
+  "results": [
+    {
+      "feature_source": "pca",
+      "classifier_type": "classical",
+      "accuracy": 0.7692307692307693,
+      "f1_score": 0.7562500000000001,
+      "precision": 0.8421052631578948,
+      "recall": 0.7692307692307693,
+      "train_time_s": 0.012293338775634766,
+      "kernel_time_s": null,
+      "confusion_matrix": [
+        [
+          14,
+          12
+        ],
+        [
+          0,
+          26
+        ]
+      ],
+      "class_names": [
+        "sparse",
+        "dense"
+      ],
+      "n_train": 204,
+      "n_test": 52
+    },
+    {
+      "feature_source": "pca",
+      "classifier_type": "quantum",
+      "accuracy": 0.7115384615384616,
+      "f1_score": 0.7026305756767061,
+      "precision": 0.7403361344537814,
+      "recall": 0.7115384615384616,
+      "train_time_s": 0.002624034881591797,
+      "kernel_time_s": 1004.8139069080353,
+      "confusion_matrix": [
+        [
+          14,
+          12
+        ],
+        [
+          3,
+          23
+        ]
+      ],
+      "class_names": [
+        "sparse",
+        "dense"
+      ],
+      "n_train": 204,
+      "n_test": 52
+    },
+    {
+      "feature_source": "rp_gaussian",
+      "classifier_type": "classical",
+      "accuracy": 0.7884615384615384,
+      "f1_score": 0.778552071234998,
+      "precision": 0.8513513513513514,
+      "recall": 0.7884615384615384,
+      "train_time_s": 0.00599980354309082,
+      "kernel_time_s": null,
+      "confusion_matrix": [
+        [
+          15,
+          11
+        ],
+        [
+          0,
+          26
+        ]
+      ],
+      "class_names": [
+        "sparse",
+        "dense"
+      ],
+      "n_train": 204,
+      "n_test": 52
+    },
+    {
+      "feature_source": "rp_gaussian",
+      "classifier_type": "quantum",
+      "accuracy": 0.7115384615384616,
+      "f1_score": 0.7088465845464724,
+      "precision": 0.7196620583717357,
+      "recall": 0.7115384615384616,
+      "train_time_s": 0.01062631607055664,
+      "kernel_time_s": 1140.9231481552124,
+      "confusion_matrix": [
+        [
+          16,
+          10
+        ],
+        [
+          5,
+          21
+        ]
+      ],
+      "class_names": [
+        "sparse",
+        "dense"
+      ],
+      "n_train": 204,
+      "n_test": 52
+    },
+    {
+      "feature_source": "rp_sparse",
+      "classifier_type": "classical",
+      "accuracy": 0.7884615384615384,
+      "f1_score": 0.778552071234998,
+      "precision": 0.8513513513513514,
+      "recall": 0.7884615384615384,
+      "train_time_s": 0.016202926635742188,
+      "kernel_time_s": null,
+      "confusion_matrix": [
+        [
+          15,
+          11
+        ],
+        [
+          0,
+          26
+        ]
+      ],
+      "class_names": [
+        "sparse",
+        "dense"
+      ],
+      "n_train": 204,
+      "n_test": 52
+    },
+    {
+      "feature_source": "rp_sparse",
+      "classifier_type": "quantum",
+      "accuracy": 0.6538461538461539,
+      "f1_score": 0.6491754122938531,
+      "precision": 0.6625000000000001,
+      "recall": 0.6538461538461539,
+      "train_time_s": 0.009022235870361328,
+      "kernel_time_s": 1200.7389063835144,
+      "confusion_matrix": [
+        [
+          14,
+          12
+        ],
+        [
+          6,
+          20
+        ]
+      ],
+      "class_names": [
+        "sparse",
+        "dense"
+      ],
+      "n_train": 204,
+      "n_test": 52
+    },
+    {
+      "feature_source": "morphometric",
+      "classifier_type": "classical",
+      "accuracy": 0.7884615384615384,
+      "f1_score": 0.778552071234998,
+      "precision": 0.8513513513513514,
+      "recall": 0.7884615384615384,
+      "train_time_s": 0.006113529205322266,
+      "kernel_time_s": null,
+      "confusion_matrix": [
+        [
+          15,
+          11
+        ],
+        [
+          0,
+          26
+        ]
+      ],
+      "class_names": [
+        "sparse",
+        "dense"
+      ],
+      "n_train": 204,
+      "n_test": 52
+    },
+    {
+      "feature_source": "morphometric",
+      "classifier_type": "quantum",
+      "accuracy": 0.7884615384615384,
+      "f1_score": 0.778552071234998,
+      "precision": 0.8513513513513514,
+      "recall": 0.7884615384615384,
+      "train_time_s": 0.004004478454589844,
+      "kernel_time_s": 488.7348413467407,
+      "confusion_matrix": [
+        [
+          15,
+          11
+        ],
+        [
+          0,
+          26
+        ]
+      ],
+      "class_names": [
+        "sparse",
+        "dense"
+      ],
+      "n_train": 204,
+      "n_test": 52
+    }
+  ]
+}
