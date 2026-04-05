@@ -84,13 +84,13 @@ except ImportError:
 
 
 LABEL_KEYS        = ["BVTV", "TbTh_um_p50", "TbN_per_mm", "TbSp_um_p50"]
-GATE_BVTV_REL_ERR = 0.15
-GATE_LCC_MIN      = 0.85
-GATE_MAX_ATTEMPTS = 8
+# Tightened for synthetic data — no measurement noise so high standards are achievable
+GATE_BVTV_REL_ERR = 0.08   # max 8% BV/TV error (was 0.15 — too loose for synthetic)
+GATE_LCC_MIN      = 0.95   # 95% connectivity minimum (was 0.85 — synthetic should be highly connected)
+GATE_MAX_ATTEMPTS = 12     # more retries to compensate for tighter gates (was 8)
 
 # FIX 3: resolution floor — at 39µm voxel, 2 voxels = 78µm
-# Reject samples that land within 2µm of the floor (quantised artefact)
-GATE_TBTH_FLOOR_UM = 0.0    # disabled — 78um is physical minimum at 39um voxel, floor rejection too aggressive
+GATE_TBTH_FLOOR_UM = 0.0    # disabled — 78um is physical minimum at 39um voxel
 GATE_TBTH_MAX_UM   = 350.0  # reject if TbTh > this (blob)
 
 # FIX 4: TbSp → base_sigma mapping
@@ -400,8 +400,8 @@ def _validate_sample(morph_raw: dict, bvtv_target: float) -> tuple[bool, str]:
                        f"(resolution artefact — 2-voxel strut)")
     if tbth > GATE_TBTH_MAX_UM:
         return False, f"TbTh={tbth:.1f}um above max {GATE_TBTH_MAX_UM}um (blob)"
-    if tbn < 0.8 or tbn > 4.0:
-        return False, f"TbN={tbn:.2f}/mm out of range [0.8, 4.0]"
+    if tbn < 1.0 or tbn > 3.5:
+        return False, f"TbN={tbn:.2f}/mm out of range [1.0, 3.5] (synthetic gate)"
     return True, ""
 
 
@@ -448,6 +448,8 @@ def generate_dataset(best_params, args, outdir, joint_sampler=None):
     print(f"  Fix 2: Validation on RAW morphology")
     print(f"  Fix 3: TbTh floor rejection < {GATE_TBTH_FLOOR_UM}um")
     print(f"  Fix 4: TbSp-aware base_sigma (scale={TBSP_SIGMA_SCALE})")
+    print(f"  Gate: BV/TV rel_err < {GATE_BVTV_REL_ERR*100:.0f}%  LCC > {GATE_LCC_MIN}  TbN in [1.0,3.5]")
+    print(f"  Max attempts per sample: {GATE_MAX_ATTEMPTS}")
     print(f"{'='*60}")
 
     dataset_dir = outdir / "dataset"
@@ -786,7 +788,7 @@ def generate_report(outdir, opt_result, best_params, importances,
                     dataset_metrics, reduction_result, args, joint_sampler):
     print(f"\n{'='*60}\n  STEP 4: FINAL REPORT\n{'='*60}")
     report = {
-        "pipeline_version": "2.0",
+        "pipeline_version": "2.1",
         "fixes_applied": ["fix1_joint_sampling", "fix2_honest_lcc",
                           "fix3_antifloor", "fix4_tbsp_sigma", "fix13_texture_features"],
         "generator_version": GENERATOR_VERSION,
@@ -851,8 +853,8 @@ def main():
     total_t0 = time.time()
 
     print(f"\n{'#'*60}")
-    print(f"  FULL PIPELINE v2.0 — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-    print(f"  Fixes: joint sampling, honest LCC, anti-floor, TbSp-sigma, texture, PLS, downstream R²")
+    print(f"  FULL PIPELINE v2.1 — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    print(f"  Fixes: joint sampling, honest LCC, anti-floor, TbSp-sigma, texture, PLS, downstream R², tight synthetic gates")
     print(f"  Generator: {GENERATOR_VERSION}")
     print(f"{'#'*60}")
 
