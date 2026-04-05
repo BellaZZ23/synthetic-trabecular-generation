@@ -622,8 +622,10 @@ def generate_one(params, args, outdir, label="", seed_override=None):
         bridge_dilate_iters=int(args.bridge_dilate_iters),
         bridge_close_iters=int(args.bridge_close_iters),
     )
+    # FIX: solid_fill_sigma — use explicit arg if provided, else adaptive default
+    sfs = float(args.solid_fill_sigma) if args.solid_fill_sigma is not None else compute_adaptive_fill_sigma(br)
     gp = GrayParams(
-        write_gray=bool(int(args.write_gray)), solid_fill_sigma=args.solid_fill_sigma,
+        write_gray=bool(int(args.write_gray)), solid_fill_sigma=sfs,
         marrow_mean=float(args.marrow_mean), bone_mean=float(args.bone_mean),
         noise_sd=float(args.noise_sd), bg_tex_sd=float(args.bg_tex_sd),
     )
@@ -801,8 +803,14 @@ def main():
         prng    = np.random.default_rng(int(args.base_seed))
         samples = sample_targets_from_pool(pooled, prng, int(args.num_samples))
 
+        # FIX: Add per-sample BV/TV variation even when --bvtv is passed.
+        # Before: all samples got identical bvtv target, limiting dataset diversity.
+        # After:  --bvtv sets the centre, each sample varies by ±0.05 normally.
+        rng_var = np.random.default_rng(int(args.base_seed) + 77777)
         for s in samples:
-            if args.bvtv       is not None: s["bvtv"]       = float(args.bvtv)
+            if args.bvtv is not None:
+                # Centre on --bvtv but add ±0.05 variation per sample
+                s["bvtv"] = float(np.clip(rng_var.normal(float(args.bvtv), 0.05), 0.10, 0.45))
             if args.tbth_um    is not None: s["tbth_um"]    = float(args.tbth_um)
             if args.tbsp_um    is not None: s["tbsp_um"]    = float(args.tbsp_um)
             if args.tbn_per_mm is not None:
