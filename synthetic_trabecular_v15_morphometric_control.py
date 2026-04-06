@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
 r"""
 synthetic_trabecular_v15_morphometric_control.py
-v15 — HONEYCOMB FIX (v2)
+v15 — HONEYCOMB FIX (v3 — zero-crossing walls)
 
-Fixes A-C from previous version PLUS two new fixes:
+Fixes A-C from previous version PLUS:
 
-  Fix D: plate_likeness_field now returns CONTINUOUS values instead of
-         a binary threshold. Previously the binary 0/1 plate field
-         dominated the blend with continuous vesselness, making
-         hysteresis thresholds meaningless.
+  Fix D: plate_likeness_field returns continuous values (not binary).
 
-  Fix E: Skeletonization is SKIPPED when plate_weight >= 0.5.
-         Skeletonization collapses plate/sheet structures to 1-voxel
-         lines, destroying topology. For plate-dominant bone the
-         proto-network IS the structure — BV/TV is controlled by
-         adjusting the threshold, not by skeleton+thicken.
+  Fix E: Skeletonization skipped for plate-dominant structures.
+
+  Fix F: ZERO-CROSSING WALL EXTRACTION — bone is defined as the
+         thin surface where the isotropic Gaussian field crosses zero:
+         bone = abs(field) < wall_thickness.
+         This naturally produces connected plate/wall topology because
+         zero-level-sets of smooth Gaussian fields are connected surfaces.
+         Wall thickness is binary-searched to hit target BV/TV.
+         Replaces superlevel-set thresholding (field >= threshold) which
+         produced disconnected blobs.
 
 Best honeycomb params:
   python synthetic_trabecular_v15_morphometric_control.py \
@@ -313,22 +315,29 @@ def prune_short_end_branches(sk01, lmin):
 #  PROTO NETWORK — FIX D, E
 # ──────────────────────────────────────────────────────────
 
-def calibrate_bvtv_by_threshold(R, target_bvtv, q_lo_init, q_hi_init,
-                                close_iters, min_component, round_sigma,
-                                tol=0.01, max_iter=30):
+def calibrate_bvtv_by_zero_crossings(field, target_bvtv,
+                                      close_iters, min_component, round_sigma,
+                                      tol=0.005, max_iter=40):
     """
-    FIX E (part of): Binary-search the quantile threshold on the
-    continuous response field R to hit a target BV/TV, instead of
-    relying on skeleton+thicken which destroys plate topology.
+    FIX F: Zero-crossing wall extraction.
+    Bone = thin walls where the Gaussian field crosses zero.
+    bone = abs(field) < wall_thickness
+    Wider wall_thickness = more bone (higher BV/TV).
+    Binary-search wall_thickness to hit target BV/TV.
+
+    This produces PLATE topology naturally — the zero-crossings of a
+    smooth Gaussian field are connected surfaces (walls/sheets), not
+    disconnected blobs.
     """
-    lo, hi = 0.30, 0.95
-    best_mask = None; best_err = float("inf")
     st26 = ndi.generate_binary_structure(3, 2)
+    f_abs = np.abs(field).astype(np.float32)
+
+    lo, hi = 0.01, float(np.percentile(f_abs, 95))
+    best_mask = None; best_err = float("inf")
 
     for _ in range(max_iter):
-        q = 0.5 * (lo + hi)
-        thr = float(np.quantile(R, q))
-        mask = (R >= thr).astype(np.uint8)
+        wt = 0.5 * (lo + hi)
+        mask = (f_abs < wt).astype(np.uint8)
 
         # Morphological cleanup
         if close_iters > 0:
@@ -348,14 +357,15 @@ def calibrate_bvtv_by_threshold(R, target_bvtv, q_lo_init, q_hi_init,
         if err < tol:
             break
 
-        # Higher quantile = less bone, lower quantile = more bone
-        if bvtv > target_bvtv:
-            lo = q  # threshold higher to remove bone
+        # Wider wall = more bone
+        if bvtv < target_bvtv:
+            lo = wt
         else:
-            hi = q  # threshold lower to add bone
+            hi = wt
 
     return best_mask, {"bvtv_target": target_bvtv,
                        "bvtv_got": float(best_mask.astype(bool).mean()),
+                       "wall_thickness": float(0.5 * (lo + hi)),
                        "best_err": best_err}
 
 
@@ -364,11 +374,10 @@ def make_proto_and_skeleton(shape, rp, rng, skel_mode, fiji_exe, fiji_cmd, dbg,
     """
     FIX A: base_sigma floor removed.
     FIX B: Isotropic field for foam/honeycomb.
-    FIX C: plate_likeness_field for sheet detection.
-    FIX D: plate field is now continuous (not binary).
-    FIX E: When plate_weight >= 0.5, skip skeletonization entirely.
-           The proto-network IS the bone — BV/TV is controlled by
-           adjusting the threshold on the continuous response field.
+    FIX F: When plate_weight >= 0.5, extract bone as ZERO-CROSSINGS
+           of the isotropic Gaussian field: abs(field) < wall_thickness.
+           This gives connected plate/wall topology naturally.
+           No skeleton, no vesselness needed for plate path.
     """
     # Isotropic Gaussian field
     f = make_isotropic_field(shape, rng, float(rp.base_sigma))
@@ -389,14 +398,14 @@ def make_proto_and_skeleton(shape, rp, rng, skel_mode, fiji_exe, fiji_cmd, dbg,
     plate_dominant = pw >= 0.5
 
     if plate_dominant and target_bvtv is not None:
-        # ── FIX E: plate-dominant path ──────────────────────
-        # Skip skeletonization. Use the continuous response field
-        # directly and binary-search the threshold to hit target BV/TV.
-        print(f"    [plate mode] Calibrating threshold for BV/TV={target_bvtv:.3f}")
-        bone01, cal_info = calibrate_bvtv_by_threshold(
-            R, target_bvtv,
-            q_lo_init=float(rp.proto_q_lo),
-            q_hi_init=float(rp.proto_q_hi),
+        # ── FIX F: zero-crossing plate path ─────────────────
+        # Bone = thin walls where the isotropic field crosses zero.
+        # abs(field) < wall_thickness gives connected plate surfaces.
+        # No skeleton, no vesselness, no blending needed — just the
+        # raw Gaussian field's zero-set, which is naturally plate-like.
+        print(f"    [plate mode] Zero-crossing walls for BV/TV={target_bvtv:.3f}")
+        bone01, cal_info = calibrate_bvtv_by_zero_crossings(
+            f, target_bvtv,
             close_iters=int(rp.proto_close_iters),
             min_component=int(rp.proto_min_component),
             round_sigma=0.35,
@@ -670,7 +679,7 @@ def generate_one(params, args, outdir, label="", seed_override=None):
     if not plate_dominant:
         sk_stats = skeleton_graph_stats(result01)
 
-    met = {"version":"v15.2_honeycomb","label":label,"seed":seed,
+    met = {"version":"v15.3_zerocross","label":label,"seed":seed,
            "morphometrics":morph,"targets":tgt,"validation":val,
            "tamimi_warnings":tw,"skeleton_stats":sk_stats,
            "thick_info":ti,"params":{"ridge":asdict(rp),"gray":asdict(gp)},
@@ -687,7 +696,7 @@ def generate_one(params, args, outdir, label="", seed_override=None):
 # ──────────────────────────────────────────────────────────
 
 def build_parser():
-    p = argparse.ArgumentParser(description="v15.2 honeycomb trabecular generator")
+    p = argparse.ArgumentParser(description="v15.3 zero-crossing trabecular generator")
     p.add_argument("--voi-dirs",  nargs="+", type=str, default=None)
     p.add_argument("--targets-json", type=str, default=None)
     p.add_argument("--profile",   type=str, default=None, choices=["tamimi-hf","tamimi-hoa"])
@@ -753,7 +762,7 @@ def main():
         print(f"  Gray: marrow={args.marrow_mean}, bone={args.bone_mean}")
         print(f"  Plate weight: {args.plate_weight}  Rod weight: {args.rod_weight}")
         pw = float(args.plate_weight)
-        print(f"  Mode: {'PLATE (no skeleton)' if pw >= 0.5 else 'ROD (skeleton+thicken)'}")
+        print(f"  Mode: {'PLATE (zero-crossing walls)' if pw >= 0.5 else 'ROD (skeleton+thicken)'}")
         print(f"{'='*60}")
         pooled = load_all_voi_targets(args.voi_dirs, voxel_um=float(args.voxel_um))
         save_json(pooled, Path(args.outdir)/"pooled_statistics.json")
@@ -785,7 +794,7 @@ def main():
                              seed_override=int(args.base_seed)+s["sample_index"]+1)
             am.append(m)
 
-        save_json({"version":"v15.2_honeycomb","n":len(am),"pooled":pooled,
+        save_json({"version":"v15.3_zerocross","n":len(am),"pooled":pooled,
                    "gray":{"marrow":args.marrow_mean,"bone":args.bone_mean},
                    "samples":[{"label":m["label"],"seed":m["seed"],
                                 "bvtv":m["targets"]["bvtv_target"],
