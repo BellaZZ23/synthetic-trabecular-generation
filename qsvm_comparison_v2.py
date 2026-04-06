@@ -65,6 +65,9 @@ def create_labels(Y, task):
     elif task == "classify-tbth":
         vals = Y[:, LABEL_KEYS.index("TbTh_um_p50")]
         return (vals >= np.median(vals)).astype(int), ["thin", "thick"]
+    elif task == "classify-tbsp":
+        vals = Y[:, LABEL_KEYS.index("TbSp_um_p50")]
+        return (vals >= np.median(vals)).astype(int), ["dense_spacing", "wide_spacing"]
     elif task == "classify-multi":
         vals = Y[:, LABEL_KEYS.index("BVTV")]
         p33  = np.percentile(vals, 33); p66 = np.percentile(vals, 66)
@@ -244,7 +247,8 @@ def main():
     p.add_argument("--outdir",            type=str, default="output/qsvm_results")
     p.add_argument("--n-qubits",          type=int, default=8)
     p.add_argument("--task",              type=str, default="classify-bvtv",
-                   choices=["classify-bvtv","classify-tbn","classify-tbth","classify-multi"])
+                   choices=["classify-bvtv","classify-tbn","classify-tbth",
+                            "classify-tbsp","classify-multi"])
     p.add_argument("--feature-map",       type=str, default="ZZ", choices=["ZZ","Z","Pauli"])
     p.add_argument("--reps",              type=int, default=2)
     p.add_argument("--cv-folds",          type=int, default=5)

@@ -224,7 +224,7 @@ def sample_joint_targets(
         for _ in range(20):  # rejection sampling to stay in bounds
             s = rng.multivariate_normal(sampler["mu"], sampler["cov"])
             bv, tbth, tbsp = float(s[0]), float(s[1]), float(s[2])
-            if (0.12 <= bv   <= 0.35 and
+            if (0.10 <= bv   <= 0.40 and
                 110  <= tbth <= 300  and
                 150  <= tbsp <= 800):
                 return bv, tbth, tbsp
@@ -232,8 +232,9 @@ def sample_joint_targets(
         s    = sampler["mu"]
         return float(s[0]), float(s[1]), float(s[2])
     else:
-        # Original independent sampling (fallback)
-        bv   = float(np.clip(rng.normal(bvtv_centre, 0.06), 0.12, 0.32))
+        # Option B: Wider BV/TV range [0.10, 0.40] for better class separability
+        # std increased from 0.06 to 0.08 to spread samples more evenly across range
+        bv   = float(np.clip(rng.normal(bvtv_centre, 0.08), 0.10, 0.40))
         tbth = float(np.clip(rng.normal(tbth_centre, 30.0), 110.0, 260.0))
         tbsp = float(np.clip(rng.normal(400.0, 80.0), 150.0, 700.0))
         return bv, tbth, tbsp
@@ -788,7 +789,7 @@ def generate_report(outdir, opt_result, best_params, importances,
                     dataset_metrics, reduction_result, args, joint_sampler):
     print(f"\n{'='*60}\n  STEP 4: FINAL REPORT\n{'='*60}")
     report = {
-        "pipeline_version": "2.1",
+        "pipeline_version": "2.2",
         "fixes_applied": ["fix1_joint_sampling", "fix2_honest_lcc",
                           "fix3_antifloor", "fix4_tbsp_sigma", "fix13_texture_features"],
         "generator_version": GENERATOR_VERSION,
@@ -853,8 +854,8 @@ def main():
     total_t0 = time.time()
 
     print(f"\n{'#'*60}")
-    print(f"  FULL PIPELINE v2.1 — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-    print(f"  Fixes: joint sampling, honest LCC, anti-floor, TbSp-sigma, texture, PLS, downstream R², tight synthetic gates")
+    print(f"  FULL PIPELINE v2.2 — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    print(f"  Fixes: joint sampling, honest LCC, anti-floor, TbSp-sigma, texture, PLS, downstream R², tight synthetic gates, wider BV/TV range [0.10,0.40], Option B+C+D+E")
     print(f"  Generator: {GENERATOR_VERSION}")
     print(f"{'#'*60}")
 
