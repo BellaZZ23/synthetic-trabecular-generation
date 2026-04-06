@@ -1,0 +1,148 @@
+{
+  "version": "v16",
+  "label": "sample_002",
+  "seed": 2097,
+  "best_connectivity_score": 2299.693201392024,
+  "connectivity": {
+    "score": 2299.693201392024,
+    "junctions": 44132,
+    "endpoints": 3,
+    "ej_ratio": 6.797788452823348e-05
+  },
+  "morphometrics": {
+    "BVTV": 0.2630523681640625,
+    "TbTh_um_p50": 110.30865786510142,
+    "TbTh_um_p90": 174.4133022449836,
+    "TbSp_um_p50": 312.0,
+    "TbSp_um_p90": 780.0,
+    "TbN_per_mm": 2.3319186290653353,
+    "Euler": 55.0,
+    "ConnProxy": -54.0,
+    "n_components": 1,
+    "lcc_frac": 1.0
+  },
+  "targets": {
+    "bvtv_target": 0.26300733415994715,
+    "tbth_um_target": 180.0,
+    "tbn_target": 1.4611518564441508,
+    "tbsp_um_target": 900.0
+  },
+  "validation": {
+    "BV/TV": {
+      "measured": 0.2630523681640625,
+      "target": 0.26300733415994715,
+      "rel_error": 0.0001712271798777549,
+      "tolerance": 0.05,
+      "pass": true
+    },
+    "Tb.Th": {
+      "measured": 110.30865786510142,
+      "target": 180.0,
+      "rel_error": 0.38717412297165876,
+      "tolerance": 0.15,
+      "pass": false
+    },
+    "Tb.N": {
+      "measured": 2.3319186290653353,
+      "target": 1.4611518564441508,
+      "rel_error": 0.5959454308467818,
+      "tolerance": 0.2,
+      "pass": false
+    },
+    "Tb.Sp": {
+      "measured": 312.0,
+      "target": 900.0,
+      "rel_error": 0.6533333333333333,
+      "tolerance": 0.15,
+      "pass": false
+    },
+    "Connectivity (LCC)": {
+      "lcc_frac": 1.0,
+      "n_components": 1,
+      "pass": true
+    }
+  },
+  "tamimi_warnings": [],
+  "skeleton_stats": {
+    "skel_voxels": 44154,
+    "junctions": 44132,
+    "endpoints": 3,
+    "ej_ratio": 6.797788452823348e-05
+  },
+  "component_stats": {
+    "n_components": 1,
+    "lcc_frac": 1.0
+  },
+  "thick_info": {
+    "base_r": 2.3076923076923075,
+    "min_r": 0.6923076923076922,
+    "scale": 0.7449180632829666,
+    "bvtv_tgt": 0.26300733415994715,
+    "bvtv_got": 0.2630523681640625,
+    "warn_target_miss": false
+  },
+  "proto_info": {
+    "hysteresis": {
+      "thr_lo": 0.07504474371671677,
+      "thr_hi": 0.10787858068943024
+    },
+    "used_skeleton": true,
+    "skel_mode": "skimage",
+    "prune": {
+      "prune_lmin": 6,
+      "vox_removed": 0
+    },
+    "rod_weight": 0.15,
+    "plate_weight": 0.85
+  },
+  "params": {
+    "ridge": {
+      "base_sigma": 2.5,
+      "warp_sigma": 14.0,
+      "warp_amp": 2.5,
+      "hessian_sigma": 1.4,
+      "ridge_strength": 1.0,
+      "proto_q_hi": 0.8,
+      "proto_q_lo": 0.68,
+      "proto_close_iters": 2,
+      "proto_open_iters": 0,
+      "proto_min_component": 250,
+      "use_skeleton": true,
+      "skeleton_prune_lmin": 6,
+      "reconnect_close_iters": 0,
+      "radius_mode": "branch",
+      "radius_jitter": 0.05,
+      "radius_smooth_sigma": 3.0,
+      "radius_scale_hint": 1.0,
+      "prune_small_components": 0,
+      "aniso_ratio": 1.1,
+      "rod_weight": 0.15,
+      "plate_weight": 0.85,
+      "coarse_weight": 0.5,
+      "medium_weight": 0.35,
+      "fine_weight": 0.15,
+      "sheet_q": 0.88,
+      "bridge_dilate_iters": 0,
+      "bridge_close_iters": 0
+    },
+    "gray": {
+      "write_gray": true,
+      "marrow_mean": 15.0,
+      "bone_mean": 65.0,
+      "solid_fill_sigma": 1.0,
+      "pve_sigma": 0.5,
+      "noise_sd": 4.0,
+      "bg_tex_sd": 2.0,
+      "unsharp": 0.6,
+      "unsharp_sigma": 0.8
+    },
+    "retry_attempts": 4,
+    "round_sigma": 0.3
+  },
+  "shape_zyx": [
+    40,
+    128,
+    128
+  ],
+  "voxel_um": 39.0
+}

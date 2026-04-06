@@ -1,0 +1,44 @@
+{
+  "pipeline_version": "2.0",
+  "feature_type": "texture",
+  "dataset_dir": "C:\\Users\\Isabella\\OneDrive - zeki\\Documents\\Research\\synthetic_trabeculae\\output\\final_dataset_v6\\dataset",
+  "n_samples": 258,
+  "n_images": 1290,
+  "image_size": 64,
+  "raw_features": 43,
+  "n_components": 4,
+  "slice_mode": "multi",
+  "comparison": {
+    "PCA": {
+      "n_components": 4,
+      "variance_explained": 0.964923083782196,
+      "reconstruction_mse": 0.031813912093639374
+    },
+    "RP_gaussian": {
+      "n_components": 4,
+      "distance_preservation_mean": 0.9303240776062012,
+      "distance_preservation_std": 0.20333844423294067
+    },
+    "RP_sparse": {
+      "n_components": 4,
+      "distance_preservation_mean": 1.1226717233657837,
+      "distance_preservation_std": 0.36585554480552673
+    }
+  },
+  "quantum_export": {
+    "pca": {
+      "file": "output\\experiments\\feat_texture\\slice_multi\\k_4\\seed_42\\rp_both\\pca_quantum_ready.npz",
+      "n_qubits_needed": 4,
+      "encoding": "angle",
+      "feature_range": "[0, pi]"
+    },
+    "n_qubits": 4,
+    "encoding": "angle [0, pi]"
+  },
+  "label_keys": [
+    "BVTV",
+    "TbTh_um_p50",
+    "TbN_per_mm",
+    "TbSp_um_p50"
+  ]
+}

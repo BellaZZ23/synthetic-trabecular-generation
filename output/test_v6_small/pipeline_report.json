@@ -1,0 +1,61 @@
+{
+  "pipeline_version": "1.3",
+  "fixes_applied": [
+    "fix1_joint_sampling",
+    "fix2_honest_lcc",
+    "fix3_antifloor",
+    "fix4_tbsp_sigma",
+    "fix13_texture_features"
+  ],
+  "generator_version": "v16",
+  "timestamp": "2026-04-05T19:18:40.336129",
+  "validation_gate": {
+    "validates_on": "raw_morphology_before_keep_largest_component",
+    "bvtv_rel_err_max": 0.15,
+    "lcc_min": 0.85,
+    "tbth_floor_um": 0.0,
+    "tbsp_sigma_scale": 0.004
+  },
+  "joint_sampler": {
+    "used": true,
+    "n_sources": 18
+  },
+  "generation": {
+    "num_samples_requested": 20,
+    "num_samples_saved": 20,
+    "shape": [
+      40,
+      128,
+      128
+    ],
+    "voxel_um": 39.0
+  },
+  "dimensionality_reduction": {
+    "features_dir": "output\\test_v6_small\\features",
+    "feature_type": "texture",
+    "results": {
+      "PCA": {
+        "n_components": 16,
+        "variance_explained": 1.0000001192092896,
+        "dist_preservation": null
+      },
+      "RP_gaussian": {
+        "n_components": 16,
+        "variance_explained": null,
+        "dist_preservation": 1.0047633647918701
+      },
+      "RP_sparse": {
+        "n_components": 16,
+        "variance_explained": null,
+        "dist_preservation": 1.0265218019485474
+      }
+    },
+    "quantum_files": {
+      "PCA": "output\\test_v6_small\\features\\pca_quantum_ready.npz",
+      "RP_gaussian": "output\\test_v6_small\\features\\rp_gaussian_quantum_ready.npz",
+      "RP_sparse": "output\\test_v6_small\\features\\rp_sparse_quantum_ready.npz"
+    },
+    "n_train": 16,
+    "n_test": 4
+  }
+}

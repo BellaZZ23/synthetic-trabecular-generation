@@ -1,0 +1,209 @@
+{
+  "pipeline_version": "1.2",
+  "task": "classify-tbn",
+  "n_qubits": 8,
+  "feature_map": "ZZ",
+  "reps": 2,
+  "cv_folds": 5,
+  "cv_repeats": 5,
+  "skip_morphometric": true,
+  "feature_sets_run": [
+    "pca",
+    "rp_gaussian",
+    "rp_sparse",
+    "pls",
+    "umap"
+  ],
+  "results": [
+    {
+      "feature_source": "pca",
+      "classifier_type": "classical",
+      "accuracy": 0.880359964881475,
+      "accuracy_std": 0.03112840021819163,
+      "f1_score": 0.880094147465333,
+      "f1_std": 0.03124486990738752,
+      "precision": 0.8836352586830374,
+      "recall": 0.880359964881475,
+      "train_time_s": 0.0035556793212890626,
+      "kernel_time_s": null,
+      "circuit_depth": null,
+      "cv_type": "RepeatedStratifiedKFold(5x5)",
+      "n_evaluations": 25,
+      "class_names": [
+        "few_struts",
+        "many_struts"
+      ]
+    },
+    {
+      "feature_source": "pca",
+      "classifier_type": "quantum",
+      "accuracy": 0.7352941176470589,
+      "accuracy_std": null,
+      "f1_score": 0.731578947368421,
+      "f1_std": null,
+      "precision": 0.7490842490842491,
+      "recall": 0.7352941176470589,
+      "train_time_s": null,
+      "kernel_time_s": 1570.3829209804535,
+      "circuit_depth": 1,
+      "cv_type": "single stratified split (CV too slow for quantum)",
+      "n_evaluations": null,
+      "class_names": [
+        "few_struts",
+        "many_struts"
+      ]
+    },
+    {
+      "feature_source": "rp_gaussian",
+      "classifier_type": "classical",
+      "accuracy": 0.8583494293239684,
+      "accuracy_std": 0.0392202883221275,
+      "f1_score": 0.8579753142045757,
+      "f1_std": 0.03934185028419047,
+      "precision": 0.8620211927169444,
+      "recall": 0.8583494293239684,
+      "train_time_s": 0.0026287269592285157,
+      "kernel_time_s": null,
+      "circuit_depth": null,
+      "cv_type": "RepeatedStratifiedKFold(5x5)",
+      "n_evaluations": 25,
+      "class_names": [
+        "few_struts",
+        "many_struts"
+      ]
+    },
+    {
+      "feature_source": "rp_gaussian",
+      "classifier_type": "quantum",
+      "accuracy": 0.8529411764705882,
+      "accuracy_std": null,
+      "f1_score": 0.8529411764705882,
+      "f1_std": null,
+      "precision": 0.8529411764705882,
+      "recall": 0.8529411764705882,
+      "train_time_s": null,
+      "kernel_time_s": 1498.5457804203033,
+      "circuit_depth": 1,
+      "cv_type": "single stratified split (CV too slow for quantum)",
+      "n_evaluations": null,
+      "class_names": [
+        "few_struts",
+        "many_struts"
+      ]
+    },
+    {
+      "feature_source": "rp_sparse",
+      "classifier_type": "classical",
+      "accuracy": 0.865478489903424,
+      "accuracy_std": 0.032195418977327694,
+      "f1_score": 0.8652301831678186,
+      "f1_std": 0.03234659774108999,
+      "precision": 0.8679235419251609,
+      "recall": 0.865478489903424,
+      "train_time_s": 0.005193519592285156,
+      "kernel_time_s": null,
+      "circuit_depth": null,
+      "cv_type": "RepeatedStratifiedKFold(5x5)",
+      "n_evaluations": 25,
+      "class_names": [
+        "few_struts",
+        "many_struts"
+      ]
+    },
+    {
+      "feature_source": "rp_sparse",
+      "classifier_type": "quantum",
+      "accuracy": 0.8529411764705882,
+      "accuracy_std": null,
+      "f1_score": 0.8528138528138528,
+      "f1_std": null,
+      "precision": 0.8541666666666667,
+      "recall": 0.8529411764705882,
+      "train_time_s": null,
+      "kernel_time_s": 1968.5164623260498,
+      "circuit_depth": 1,
+      "cv_type": "single stratified split (CV too slow for quantum)",
+      "n_evaluations": null,
+      "class_names": [
+        "few_struts",
+        "many_struts"
+      ]
+    },
+    {
+      "feature_source": "pls",
+      "classifier_type": "classical",
+      "accuracy": 0.8720280948200175,
+      "accuracy_std": 0.035757762109671055,
+      "f1_score": 0.8715744489730736,
+      "f1_std": 0.03599801425710695,
+      "precision": 0.8770923182670746,
+      "recall": 0.8720280948200175,
+      "train_time_s": 0.009111080169677734,
+      "kernel_time_s": null,
+      "circuit_depth": null,
+      "cv_type": "RepeatedStratifiedKFold(5x5)",
+      "n_evaluations": 25,
+      "class_names": [
+        "few_struts",
+        "many_struts"
+      ]
+    },
+    {
+      "feature_source": "pls",
+      "classifier_type": "quantum",
+      "accuracy": 0.8235294117647058,
+      "accuracy_std": null,
+      "f1_score": 0.8233766233766234,
+      "f1_std": null,
+      "precision": 0.8246527777777777,
+      "recall": 0.8235294117647058,
+      "train_time_s": null,
+      "kernel_time_s": 630.5697224140167,
+      "circuit_depth": 1,
+      "cv_type": "single stratified split (CV too slow for quantum)",
+      "n_evaluations": null,
+      "class_names": [
+        "few_struts",
+        "many_struts"
+      ]
+    },
+    {
+      "feature_source": "umap",
+      "classifier_type": "classical",
+      "accuracy": 0.874433713784021,
+      "accuracy_std": 0.03402925048238768,
+      "f1_score": 0.8739786703404602,
+      "f1_std": 0.03449905866811562,
+      "precision": 0.8791152131819903,
+      "recall": 0.874433713784021,
+      "train_time_s": 0.0070260906219482425,
+      "kernel_time_s": null,
+      "circuit_depth": null,
+      "cv_type": "RepeatedStratifiedKFold(5x5)",
+      "n_evaluations": 25,
+      "class_names": [
+        "few_struts",
+        "many_struts"
+      ]
+    },
+    {
+      "feature_source": "umap",
+      "classifier_type": "quantum",
+      "accuracy": 0.8529411764705882,
+      "accuracy_std": null,
+      "f1_score": 0.8528138528138528,
+      "f1_std": null,
+      "precision": 0.8541666666666667,
+      "recall": 0.8529411764705882,
+      "train_time_s": null,
+      "kernel_time_s": 1573.2572162151337,
+      "circuit_depth": 1,
+      "cv_type": "single stratified split (CV too slow for quantum)",
+      "n_evaluations": null,
+      "class_names": [
+        "few_struts",
+        "many_struts"
+      ]
+    }
+  ]
+}

@@ -397,20 +397,22 @@ def _validate_sample(morph_raw: dict, bvtv_target: float) -> tuple[bool, str]:
 
 def _build_rp_kw(best_params: dict, bs: float) -> dict:
     """Build RidgeParams kwargs — base_sigma already incorporates FIX 4."""
+    # warp_sigma from params (v15 best uses 8.0, old default was 14.0)
     rp_kw = dict(
-        base_sigma=bs, warp_sigma=14.0,
-        warp_amp=float(best_params.get("warp_amp", 3.0)),
-        hessian_sigma=float(best_params.get("hessian_sigma", 1.4)),
+        base_sigma=bs,
+        warp_sigma=float(best_params.get("warp_sigma", 8.0)),
+        warp_amp=float(best_params.get("warp_amp", 1.0)),
+        hessian_sigma=float(best_params.get("hessian_sigma", 1.0)),
         ridge_strength=1.0,
-        proto_q_hi=float(best_params.get("proto_q_hi", 0.92)),
-        proto_q_lo=float(best_params.get("proto_q_lo", 0.84)),
-        proto_close_iters=int(best_params.get("proto_close_iters", 2)),
+        proto_q_hi=float(best_params.get("proto_q_hi", 0.82)),
+        proto_q_lo=float(best_params.get("proto_q_lo", 0.70)),
+        proto_close_iters=int(best_params.get("proto_close_iters", 1)),
         proto_open_iters=0, proto_min_component=400,
         use_skeleton=True, skeleton_prune_lmin=8, reconnect_close_iters=3,
         radius_mode="branch",
-        radius_jitter=float(best_params.get("radius_jitter", 0.15)),
+        radius_jitter=float(best_params.get("radius_jitter", 0.03)),
         radius_smooth_sigma=3.0, radius_scale_hint=1.0, prune_small_components=0,
-        aniso_ratio=float(best_params.get("aniso_ratio", 3.0)),
+        aniso_ratio=float(best_params.get("aniso_ratio", 1.0)),
     )
     if GENERATOR_VERSION == "v16":
         rp_kw.update(dict(
@@ -448,8 +450,9 @@ def generate_dataset(best_params, args, outdir, joint_sampler=None):
     shape       = (args.z, args.xy, args.xy)
     all_metrics = []; n_skipped = 0; n_retries = 0; t0 = time.time()
 
-    gp = GrayParams(write_gray=True, solid_fill_sigma=3.0, marrow_mean=15.0,
-                    bone_mean=240.0, noise_sd=3.0, bg_tex_sd=1.0)
+    # Updated grayscale params to match real bone appearance at 39um
+    gp = GrayParams(write_gray=True, solid_fill_sigma=1.0, marrow_mean=20.0,
+                    bone_mean=65.0, noise_sd=3.0, bg_tex_sd=1.0)
 
     for i in range(args.num_samples):
         base_seed  = args.seed + i + 1
@@ -465,7 +468,7 @@ def generate_dataset(best_params, args, outdir, joint_sampler=None):
         # FIX 4: TbSp-aware base_sigma
         # Wider spacing → larger noise field → coarser trabecular network
         bs_tbsp = bs_base + TBSP_SIGMA_SCALE * tbsp_target
-        bs      = float(max(bs_tbsp, 4.5))
+        bs      = float(max(bs_tbsp, 1.5))  # lowered floor to allow fine networks (was 4.5)
 
         sample_dir = dataset_dir / f"sample_{i:03d}"
         sample_dir.mkdir(parents=True, exist_ok=True)
@@ -773,13 +776,14 @@ def main():
         best_params = data.get("best_params", data); opt_result = data
         print(f"\n  Loaded params from {args.params_json}")
     elif args.skip_optimize:
-        best_params = {"bvtv": 0.22, "tbth_um": 180.0, "base_sigma": 5.0,
-                       "aniso_ratio": 3.0, "warp_amp": 3.0, "hessian_sigma": 1.4,
-                       "proto_q_hi": 0.92, "proto_q_lo": 0.84, "proto_close_iters": 2,
-                       "radius_jitter": 0.15, "round_sigma": 0.7,
-                       "rod_weight": 1.0, "plate_weight": 0.0}
+        # Updated to best visual params found for v15 at 39um voxel
+        best_params = {"bvtv": 0.28, "tbth_um": 120.0, "base_sigma": 1.8,
+                       "aniso_ratio": 1.0, "warp_amp": 1.0, "warp_sigma": 8.0,
+                       "hessian_sigma": 1.0, "proto_q_hi": 0.82, "proto_q_lo": 0.70,
+                       "proto_close_iters": 1, "radius_jitter": 0.03,
+                       "round_sigma": 0.3, "rod_weight": 1.0, "plate_weight": 0.0}
         opt_result = {"best_loss": None, "best_params": best_params}
-        print("\n  Skipping optimization, using v15 proven defaults")
+        print("\n  Skipping optimization, using best v15 visual params (base_sigma=1.8)")
     else:
         best_params, importances = run_optimization(
             args.reference_image, args.optimize_trials, outdir)
