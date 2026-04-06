@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """
-full_pipeline.py  — v1.3
+full_pipeline.py  — v2.3
 Fixes applied:
   Fix 1  : Joint morphometric target sampling from real VOI covariance structure
   Fix 2  : Morphometrics measured BEFORE keep_largest_component (honest LCC)
   Fix 3  : Anti-floor rejection — TbTh=78um (resolution floor) triggers retry
   Fix 4  : TbSp-aware base_sigma — spacing target influences noise field scale
   Fix 13 : run_dim_reduction uses texture features, not raw pixels
+  Fix 14 : PLATE MODE — passes plate_weight/rod_weight/target_bvtv through to
+           v15.3 generator so zero-crossing plate path is used correctly.
+           GrayParams loaded from params-json instead of hardcoded.
 """
 from __future__ import annotations
 
@@ -84,18 +87,14 @@ except ImportError:
 
 
 LABEL_KEYS        = ["BVTV", "TbTh_um_p50", "TbN_per_mm", "TbSp_um_p50"]
-# Tightened for synthetic data — no measurement noise so high standards are achievable
-GATE_BVTV_REL_ERR = 0.08   # max 8% BV/TV error (was 0.15 — too loose for synthetic)
-GATE_LCC_MIN      = 0.95   # 95% connectivity minimum (was 0.85 — synthetic should be highly connected)
-GATE_MAX_ATTEMPTS = 12     # more retries to compensate for tighter gates (was 8)
+GATE_BVTV_REL_ERR = 0.08
+GATE_LCC_MIN      = 0.95
+GATE_MAX_ATTEMPTS = 12
 
-# FIX 3: resolution floor — at 39µm voxel, 2 voxels = 78µm
-GATE_TBTH_FLOOR_UM = 0.0    # disabled — 78um is physical minimum at 39um voxel
-GATE_TBTH_MAX_UM   = 350.0  # reject if TbTh > this (blob)
+GATE_TBTH_FLOOR_UM = 0.0
+GATE_TBTH_MAX_UM   = 350.0
 
-# FIX 4: TbSp → base_sigma mapping
-# Higher spacing = larger noise field scale (fewer, more separated struts)
-TBSP_SIGMA_SCALE = 0.004    # base_sigma += TBSP_SIGMA_SCALE * tbsp_um_target
+TBSP_SIGMA_SCALE = 0.004
 
 
 # ═══════════════════════════════════════════════════════════
@@ -151,89 +150,47 @@ def _extract_texture_features(sl: np.ndarray, image_size: int = 64) -> np.ndarra
 # ═══════════════════════════════════════════════════════════
 
 def build_joint_sampler(voi_dirs: list[str], voxel_um: float) -> dict:
-    """
-    FIX 1: Load real VOI target JSON files and fit a multivariate Gaussian
-    over [BVTV, TbTh_um, TbSp_um] jointly.
-
-    This preserves the real covariance structure between morphometrics
-    instead of sampling them independently.
-
-    Returns dict with 'mu', 'cov', 'raw_targets', and per-variable bounds.
-    """
     bvtvs, tbths, tbsps = [], [], []
-
     for d in voi_dirs:
         for f in sorted(Path(d).glob("*_targets.json")):
             with open(f) as fh:
                 data = json.load(fh)
-
-            # Apply the same voxel correction as load_all_voi_targets
             rv = 1.0
             vz = data.get("voxel_um_zyx")
             if vz and len(vz) >= 1:
                 rv = float(vz[0])
             c = voxel_um / max(1.0, rv)
-
             bv   = float(data.get("BVTV", 0))
             tbth = float(data.get("TbTh_um_p90", data.get("TbTh_um_p50", 0))) * c * 2.0
             tbsp = float(data.get("TbSp_um_p50", 0)) * c * 2.0
-
-            # Only keep biologically plausible rows
             if 0.05 <= bv <= 0.50 and tbth >= 80 and tbsp >= 150:
                 bvtvs.append(bv)
                 tbths.append(tbth)
                 tbsps.append(tbsp)
-
     if len(bvtvs) < 3:
         print(f"  WARNING: Only {len(bvtvs)} valid VOI targets — falling back to independent sampling")
         return None
-
-    raw = np.column_stack([bvtvs, tbths, tbsps])  # (n, 3)
+    raw = np.column_stack([bvtvs, tbths, tbsps])
     mu  = raw.mean(axis=0)
     cov = np.cov(raw.T)
-
-    # Add small regularisation to ensure positive-definite covariance
     cov += np.eye(3) * 1e-6
-
     print(f"  FIX 1: Joint sampler fitted on {len(bvtvs)} real VOI targets")
     print(f"    BV/TV:  mean={mu[0]:.3f}  range=[{raw[:,0].min():.3f}, {raw[:,0].max():.3f}]")
     print(f"    TbTh:   mean={mu[1]:.1f}um range=[{raw[:,1].min():.1f}, {raw[:,1].max():.1f}]um")
     print(f"    TbSp:   mean={mu[2]:.1f}um range=[{raw[:,2].min():.1f}, {raw[:,2].max():.1f}]um")
-
-    return {
-        "mu":          mu,
-        "cov":         cov,
-        "raw_targets": raw,
-        "n_sources":   len(bvtvs),
-    }
+    return {"mu": mu, "cov": cov, "raw_targets": raw, "n_sources": len(bvtvs)}
 
 
-def sample_joint_targets(
-    sampler: dict | None,
-    rng: np.random.Generator,
-    bvtv_centre: float,
-    tbth_centre: float,
-    voxel_um: float,
-) -> tuple[float, float, float]:
-    """
-    FIX 1: Sample (bvtv, tbth, tbsp) from joint distribution.
-    Falls back to independent sampling if no sampler available.
-    """
+def sample_joint_targets(sampler, rng, bvtv_centre, tbth_centre, voxel_um):
     if sampler is not None:
-        # Sample from multivariate Gaussian fitted to real VOI data
-        for _ in range(20):  # rejection sampling to stay in bounds
+        for _ in range(20):
             s = rng.multivariate_normal(sampler["mu"], sampler["cov"])
             bv, tbth, tbsp = float(s[0]), float(s[1]), float(s[2])
-            if (0.10 <= bv   <= 0.40 and
-                110  <= tbth <= 300  and
-                150  <= tbsp <= 800):
+            if (0.10 <= bv <= 0.40 and 110 <= tbth <= 300 and 150 <= tbsp <= 800):
                 return bv, tbth, tbsp
-        # Fallback if rejection loop exhausted
-        s    = sampler["mu"]
+        s = sampler["mu"]
         return float(s[0]), float(s[1]), float(s[2])
     else:
-        # Option B: Wider BV/TV range [0.10, 0.40] for better class separability
-        # std increased from 0.06 to 0.08 to spread samples more evenly across range
         bv   = float(np.clip(rng.normal(bvtv_centre, 0.08), 0.10, 0.40))
         tbth = float(np.clip(rng.normal(tbth_centre, 30.0), 110.0, 260.0))
         tbsp = float(np.clip(rng.normal(400.0, 80.0), 150.0, 700.0))
@@ -371,14 +328,10 @@ def run_optimization(ref_path, n_trials, outdir):
 
 
 # ═══════════════════════════════════════════════════════════
-#  STEP 2: GENERATE DATASET
+#  STEP 2: GENERATE DATASET — FIX 14: plate mode support
 # ═══════════════════════════════════════════════════════════
 
 def _validate_sample(morph_raw: dict, bvtv_target: float) -> tuple[bool, str]:
-    """
-    FIX 2: Validate against RAW morphometrics (before keep_largest_component).
-    FIX 3: Reject TbTh at resolution floor (78µm artefact).
-    """
     bvtv = morph_raw.get("BVTV", 0.0)
     lcc  = morph_raw.get("lcc_frac", 0.0)
     tbth = morph_raw.get("TbTh_um_p50", 0.0)
@@ -394,11 +347,8 @@ def _validate_sample(morph_raw: dict, bvtv_target: float) -> tuple[bool, str]:
         return False, f"BV/TV={bvtv:.3f} near zero (skeleton collapsed)"
     if bvtv > 0.60:
         return False, f"BV/TV={bvtv:.3f} near one (over-thickened blob)"
-
-    # FIX 3: Hard reject on resolution floor
     if tbth < GATE_TBTH_FLOOR_UM:
-        return False, (f"TbTh={tbth:.1f}um below floor threshold {GATE_TBTH_FLOOR_UM}um "
-                       f"(resolution artefact — 2-voxel strut)")
+        return False, (f"TbTh={tbth:.1f}um below floor threshold {GATE_TBTH_FLOOR_UM}um")
     if tbth > GATE_TBTH_MAX_UM:
         return False, f"TbTh={tbth:.1f}um above max {GATE_TBTH_MAX_UM}um (blob)"
     if tbn < 1.0 or tbn > 3.5:
@@ -407,48 +357,73 @@ def _validate_sample(morph_raw: dict, bvtv_target: float) -> tuple[bool, str]:
 
 
 def _build_rp_kw(best_params: dict, bs: float) -> dict:
-    """Build RidgeParams kwargs — base_sigma already incorporates FIX 4."""
-    # warp_sigma from params (v15 best uses 8.0, old default was 14.0)
+    """
+    FIX 14: Now passes plate_weight and rod_weight from best_params.
+    """
+    pw = float(best_params.get("plate_weight", 0.0))
+    rw = float(best_params.get("rod_weight", 1.0))
+
     rp_kw = dict(
         base_sigma=bs,
-        warp_sigma=float(best_params.get("warp_sigma", 8.0)),
-        warp_amp=float(best_params.get("warp_amp", 1.0)),
-        hessian_sigma=float(best_params.get("hessian_sigma", 1.0)),
+        warp_sigma=float(best_params.get("warp_sigma", 10.0)),
+        warp_amp=float(best_params.get("warp_amp", 1.5)),
+        hessian_sigma=float(best_params.get("hessian_sigma", 1.4)),
         ridge_strength=1.0,
-        proto_q_hi=float(best_params.get("proto_q_hi", 0.82)),
-        proto_q_lo=float(best_params.get("proto_q_lo", 0.70)),
+        proto_q_hi=float(best_params.get("proto_q_hi", 0.78)),
+        proto_q_lo=float(best_params.get("proto_q_lo", 0.65)),
         proto_close_iters=int(best_params.get("proto_close_iters", 1)),
-        proto_open_iters=0, proto_min_component=400,
-        use_skeleton=True, skeleton_prune_lmin=8, reconnect_close_iters=3,
+        proto_open_iters=0,
+        proto_min_component=int(best_params.get("proto_min_component", 0)),
+        use_skeleton=True,
+        skeleton_prune_lmin=8,
+        reconnect_close_iters=3,
         radius_mode="branch",
-        radius_jitter=float(best_params.get("radius_jitter", 0.03)),
-        radius_smooth_sigma=3.0, radius_scale_hint=1.0, prune_small_components=0,
+        radius_jitter=float(best_params.get("radius_jitter", 0.04)),
+        radius_smooth_sigma=3.0,
+        radius_scale_hint=1.0,
+        prune_small_components=0,
         aniso_ratio=float(best_params.get("aniso_ratio", 1.0)),
+        plate_weight=pw,
+        rod_weight=rw,
     )
     if GENERATOR_VERSION == "v16":
         rp_kw.update(dict(
-            rod_weight=float(best_params.get("rod_weight", 0.92)),
-            plate_weight=float(best_params.get("plate_weight", 0.08)),
             coarse_weight=0.50, medium_weight=0.35, fine_weight=0.15,
             sheet_q=0.92, bridge_dilate_iters=0, bridge_close_iters=0,
         ))
     return rp_kw
 
 
+def _build_gp(best_params: dict) -> GrayParams:
+    """
+    FIX 14: Build GrayParams from best_params json instead of hardcoding.
+    """
+    return GrayParams(
+        write_gray=True,
+        solid_fill_sigma=float(best_params.get("solid_fill_sigma", 1.8)),
+        marrow_mean=float(best_params.get("marrow_mean", 20.0)),
+        bone_mean=float(best_params.get("bone_mean", 95.0)),
+        noise_sd=float(best_params.get("noise_sd", 3.0)),
+        bg_tex_sd=float(best_params.get("bg_tex_sd", 1.0)),
+    )
+
+
 def generate_dataset(best_params, args, outdir, joint_sampler=None):
     """
-    Generate N samples.
-    Fix 1: Uses joint_sampler if available (correlated morphometric targets).
-    Fix 2: Validates on raw morphology before keep_largest_component.
-    Fix 3: Rejects TbTh floor artefacts.
-    Fix 4: base_sigma modulated by TbSp target.
+    FIX 14: Detects plate_weight >= 0.5 and uses the zero-crossing plate
+    path in the generator. Passes target_bvtv to make_proto_and_skeleton
+    so the plate path can calibrate wall thickness directly.
+    Skips skeleton+thicken in plate mode.
     """
+    pw = float(best_params.get("plate_weight", 0.0))
+    plate_mode = pw >= 0.5
+
     print(f"\n{'='*60}")
     print(f"  STEP 2: GENERATE {args.num_samples} SAMPLES ({args.xy}x{args.xy}x{args.z})")
+    print(f"  Mode: {'PLATE (zero-crossing, no skeleton)' if plate_mode else 'ROD (skeleton+thicken)'}")
+    print(f"  plate_weight={pw}  rod_weight={best_params.get('rod_weight', 1.0)}")
     print(f"  Fix 1: {'Joint VOI sampler' if joint_sampler else 'Independent sampler (fallback)'}")
-    print(f"  Fix 2: Validation on RAW morphology")
-    print(f"  Fix 3: TbTh floor rejection < {GATE_TBTH_FLOOR_UM}um")
-    print(f"  Fix 4: TbSp-aware base_sigma (scale={TBSP_SIGMA_SCALE})")
+    print(f"  Fix 14: {'Plate path active — target_bvtv passed to generator' if plate_mode else 'Rod path'}")
     print(f"  Gate: BV/TV rel_err < {GATE_BVTV_REL_ERR*100:.0f}%  LCC > {GATE_LCC_MIN}  TbN in [1.0,3.5]")
     print(f"  Max attempts per sample: {GATE_MAX_ATTEMPTS}")
     print(f"{'='*60}")
@@ -457,21 +432,22 @@ def generate_dataset(best_params, args, outdir, joint_sampler=None):
     dataset_dir.mkdir(parents=True, exist_ok=True)
 
     voxel_um    = float(args.voxel_um)
-    bvtv_centre = float(best_params.get("bvtv", 0.22))
+    bvtv_centre = float(best_params.get("bvtv", 0.42))
     tbth_centre = float(best_params.get("tbth_um", 180.0))
-    bs_base     = float(best_params.get("base_sigma", 5.0))
+    bs_base     = float(best_params.get("base_sigma", 3.0))
     shape       = (args.z, args.xy, args.xy)
     all_metrics = []; n_skipped = 0; n_retries = 0; t0 = time.time()
 
-    # Updated grayscale params to match real bone appearance at 39um
-    gp = GrayParams(write_gray=True, solid_fill_sigma=1.0, marrow_mean=20.0,
-                    bone_mean=65.0, noise_sd=3.0, bg_tex_sd=1.0)
+    # FIX 14: GrayParams from best_params json
+    gp = _build_gp(best_params)
+
+    min_comp = int(best_params.get("min_component_size", 0))
+    round_s  = float(best_params.get("round_sigma", 0.0))
 
     for i in range(args.num_samples):
         base_seed  = args.seed + i + 1
         rng_sample = np.random.default_rng(base_seed + 99999)
 
-        # FIX 1: Joint target sampling
         bvtv_target, tbth_target, tbsp_target = sample_joint_targets(
             joint_sampler, rng_sample, bvtv_centre, tbth_centre, voxel_um)
 
@@ -479,9 +455,8 @@ def generate_dataset(best_params, args, outdir, joint_sampler=None):
         br         = tbth_um_to_radius_vox(tbth_target, voxel_um)
 
         # FIX 4: TbSp-aware base_sigma
-        # Wider spacing → larger noise field → coarser trabecular network
         bs_tbsp = bs_base + TBSP_SIGMA_SCALE * tbsp_target
-        bs      = float(max(bs_tbsp, 1.5))  # lowered floor to allow fine networks (was 4.5)
+        bs      = float(max(bs_tbsp, 1.5))
 
         sample_dir = dataset_dir / f"sample_{i:03d}"
         sample_dir.mkdir(parents=True, exist_ok=True)
@@ -492,22 +467,42 @@ def generate_dataset(best_params, args, outdir, joint_sampler=None):
             rng  = np.random.default_rng(seed)
             try:
                 rp = RidgeParams(**_build_rp_kw(best_params, bs))
-                sk01, _ = make_proto_and_skeleton(shape=shape, rp=rp, rng=rng,
-                    skel_mode="skimage", fiji_exe=None,
-                    fiji_cmd="Skeletonize (2D/3D)", dbg=None)
-                b, _ = thicken_from_skeleton_radius_field(sk01, rng, bvtv_target, br,
-                    "branch", float(best_params.get("radius_jitter", 0.15)),
-                    3.0, 1.0, dbg=None)
-                b = anti_block_round(b, float(best_params.get("round_sigma", 0.8)))
-                b = remove_small_components(b, 500)
+
+                if plate_mode:
+                    # ── FIX 14: PLATE PATH ──────────────────────
+                    # Pass target_bvtv so zero-crossing calibration works.
+                    # Returns the final bone mask directly (no skeleton needed).
+                    b, _ = make_proto_and_skeleton(
+                        shape=shape, rp=rp, rng=rng,
+                        skel_mode="skimage", fiji_exe=None,
+                        fiji_cmd="Skeletonize (2D/3D)", dbg=None,
+                        target_bvtv=bvtv_target,
+                    )
+                    # Minimal post-processing — zero-crossing walls are
+                    # already clean, heavy morphology destroys them
+                    if min_comp > 0:
+                        b = remove_small_components(b, min_comp)
+                else:
+                    # ── ROD PATH (original) ─────────────────────
+                    sk01, _ = make_proto_and_skeleton(
+                        shape=shape, rp=rp, rng=rng,
+                        skel_mode="skimage", fiji_exe=None,
+                        fiji_cmd="Skeletonize (2D/3D)", dbg=None,
+                        target_bvtv=bvtv_target,
+                    )
+                    b, _ = thicken_from_skeleton_radius_field(
+                        sk01, rng, bvtv_target, br,
+                        "branch", float(best_params.get("radius_jitter", 0.04)),
+                        3.0, 1.0, dbg=None)
+                    b = anti_block_round(b, round_s)
+                    b = remove_small_components(b, max(min_comp, 500))
+
             except Exception as e:
                 print(f"    [sample_{i:03d}] attempt {attempt+1} exception: {e}")
                 n_retries += 1; continue
 
             # FIX 2: measure BEFORE keep_largest_component
             m_raw = measure_all_morphometrics(b, voxel_um)
-
-            # FIX 3: _validate_sample now includes floor rejection
             ok, reason = _validate_sample(m_raw, bvtv_target)
 
             if ok:
@@ -548,11 +543,12 @@ def generate_dataset(best_params, args, outdir, joint_sampler=None):
         met = {
             "version": GENERATOR_VERSION, "label": f"sample_{i:03d}", "seed": seed,
             "morphometrics":     morph_clean,
-            "morphometrics_raw": morph_raw,   # FIX 2: honest pre-LCC measurement
+            "morphometrics_raw": morph_raw,
             "targets": tgt,
             "params": {"ridge": asdict(rp_saved), "gray": asdict(gp),
-                       "bs_tbsp_adjusted": bs,     # FIX 4: log adjusted sigma
-                       "tbsp_target": tbsp_target},
+                       "bs_tbsp_adjusted": bs,
+                       "tbsp_target": tbsp_target,
+                       "plate_mode": plate_mode},
             "shape_zyx": list(shape), "voxel_um": voxel_um,
         }
         save_json(met, sample_dir/"metrics.json")
@@ -571,17 +567,14 @@ def generate_dataset(best_params, args, outdir, joint_sampler=None):
     n_saved = len(all_metrics)
     print(f"\n  Generated {n_saved} valid samples ({n_skipped} skipped, {n_retries} retries)")
 
-    # Report TbTh distribution to confirm floor fix is working
     if all_metrics:
         tbths = [m["morphometrics"]["TbTh_um_p50"] for m in all_metrics]
         print(f"  TbTh distribution: min={min(tbths):.0f}um mean={np.mean(tbths):.0f}um max={max(tbths):.0f}um")
-        n_floor = sum(1 for t in tbths if t < GATE_TBTH_FLOOR_UM + 5)
-        print(f"  Samples near floor (<{GATE_TBTH_FLOOR_UM+5:.0f}um): {n_floor} "
-              f"({100*n_floor/max(n_saved,1):.1f}%) — FIX 3 target: 0%")
 
     save_json({
         "version": GENERATOR_VERSION, "n": n_saved,
         "n_skipped": n_skipped, "n_retries": n_retries,
+        "plate_mode": plate_mode,
         "fix1_joint_sampler": joint_sampler is not None,
         "optimal_params": best_params,
         "samples": [{"label": m["label"], "seed": m["seed"],
@@ -622,7 +615,6 @@ def _downstream_regression_score(Z_train, Z_test, Y_train, Y_test, label_names, 
 
 
 def run_dim_reduction(dataset_dir, outdir, n_components=16, image_size=64, seed=42, scaler_name='robust', use_pls=True, use_umap=True):
-    """FIX 13: Uses texture features (GLCM + stats) instead of raw pixels."""
     print(f"\n{'='*60}")
     print(f"  STEP 3: DIMENSIONALITY REDUCTION (texture features, n={n_components})")
     print(f"{'='*60}")
@@ -715,7 +707,6 @@ def run_dim_reduction(dataset_dir, outdir, n_components=16, image_size=64, seed=
         quantum_files[name] = str(fname)
         print(f"  Saved: {fname} ({Zq_tr.shape[0]} train, {Zq_te.shape[0]} test)")
 
-    # UMAP nonlinear reduction
     if UMAP_AVAILABLE and use_umap:
         try:
             reducer = umap.UMAP(n_components=nc, n_neighbors=15,
@@ -737,7 +728,6 @@ def run_dim_reduction(dataset_dir, outdir, n_components=16, image_size=64, seed=
         except Exception as e:
             print(f"  UMAP failed: {e}")
 
-    # PLS supervised baseline
     pls_result = None
     if use_pls:
         try:
@@ -761,7 +751,6 @@ def run_dim_reduction(dataset_dir, outdir, n_components=16, image_size=64, seed=
         except Exception as e:
             print(f"  PLS failed: {e}")
 
-    # Print downstream comparison summary
     print(f"\n  Downstream R² summary (scaler={scaler_name}):")
     for method, r in results.items():
         ds = r.get("downstream_metrics", {})
@@ -789,9 +778,10 @@ def generate_report(outdir, opt_result, best_params, importances,
                     dataset_metrics, reduction_result, args, joint_sampler):
     print(f"\n{'='*60}\n  STEP 4: FINAL REPORT\n{'='*60}")
     report = {
-        "pipeline_version": "2.2",
+        "pipeline_version": "2.3",
         "fixes_applied": ["fix1_joint_sampling", "fix2_honest_lcc",
-                          "fix3_antifloor", "fix4_tbsp_sigma", "fix13_texture_features"],
+                          "fix3_antifloor", "fix4_tbsp_sigma",
+                          "fix13_texture_features", "fix14_plate_mode"],
         "generator_version": GENERATOR_VERSION,
         "timestamp": datetime.now().isoformat(),
         "validation_gate": {
@@ -810,6 +800,7 @@ def generate_report(outdir, opt_result, best_params, importances,
             "num_samples_saved": len(dataset_metrics),
             "shape": [args.z, args.xy, args.xy],
             "voxel_um": args.voxel_um,
+            "plate_mode": float(best_params.get("plate_weight", 0.0)) >= 0.5,
         },
         "dimensionality_reduction": reduction_result,
     }
@@ -854,12 +845,12 @@ def main():
     total_t0 = time.time()
 
     print(f"\n{'#'*60}")
-    print(f"  FULL PIPELINE v2.2 — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-    print(f"  Fixes: joint sampling, honest LCC, anti-floor, TbSp-sigma, texture, PLS, downstream R², tight synthetic gates, wider BV/TV range [0.10,0.40], Option B+C+D+E")
+    print(f"  FULL PIPELINE v2.3 — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    print(f"  Fixes: joint sampling, honest LCC, anti-floor, TbSp-sigma,")
+    print(f"         texture, PLS, downstream R², plate mode (Fix 14)")
     print(f"  Generator: {GENERATOR_VERSION}")
     print(f"{'#'*60}")
 
-    # FIX 1: Build joint sampler from real VOI data if available
     joint_sampler = None
     if args.voi_dirs:
         print(f"\n  Building joint target sampler from {len(args.voi_dirs)} VOI dir(s)...")
@@ -870,15 +861,16 @@ def main():
         with open(args.params_json) as f: data = json.load(f)
         best_params = data.get("best_params", data); opt_result = data
         print(f"\n  Loaded params from {args.params_json}")
+        pw = float(best_params.get("plate_weight", 0.0))
+        print(f"  plate_weight={pw} → {'PLATE mode (zero-crossing)' if pw >= 0.5 else 'ROD mode (skeleton)'}")
     elif args.skip_optimize:
-        # Updated to best visual params found for v15 at 39um voxel
         best_params = {"bvtv": 0.28, "tbth_um": 120.0, "base_sigma": 1.8,
                        "aniso_ratio": 1.0, "warp_amp": 1.0, "warp_sigma": 8.0,
                        "hessian_sigma": 1.0, "proto_q_hi": 0.82, "proto_q_lo": 0.70,
                        "proto_close_iters": 1, "radius_jitter": 0.03,
                        "round_sigma": 0.3, "rod_weight": 1.0, "plate_weight": 0.0}
         opt_result = {"best_loss": None, "best_params": best_params}
-        print("\n  Skipping optimization, using best v15 visual params (base_sigma=1.8)")
+        print("\n  Skipping optimization, using default rod params")
     else:
         best_params, importances = run_optimization(
             args.reference_image, args.optimize_trials, outdir)
