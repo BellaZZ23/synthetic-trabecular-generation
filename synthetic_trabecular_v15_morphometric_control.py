@@ -1,46 +1,42 @@
 #!/usr/bin/env python3
 r"""
 synthetic_trabecular_v15_morphometric_control.py
-v15 — HONEYCOMB FIX
+v15 — HONEYCOMB FIX (v2)
 
-Three fixes applied to produce plate/honeycomb structure:
+Fixes A-C from previous version PLUS two new fixes:
 
-  Fix A: Removed bs=max(bs, 4.5) floor — was silently overriding base_sigma
-          regardless of command line argument. Now base_sigma is respected.
+  Fix D: plate_likeness_field now returns CONTINUOUS values instead of
+         a binary threshold. Previously the binary 0/1 plate field
+         dominated the blend with continuous vesselness, making
+         hysteresis thresholds meaningless.
 
-  Fix B: Field generation changed from rod-biased max-blend to isotropic
-          Gaussian field. Max-blend of directional fields always picks the
-          strongest rod-like signal. Isotropic field + vesselness detects
-          plate boundaries naturally.
-
-  Fix C: Added plate_likeness_field — explicit plate/sheet detector using
-          smoothed gradient magnitude. Blended with vesselness via
-          --plate-weight argument (default 0.7 for honeycomb).
+  Fix E: Skeletonization is SKIPPED when plate_weight >= 0.5.
+         Skeletonization collapses plate/sheet structures to 1-voxel
+         lines, destroying topology. For plate-dominant bone the
+         proto-network IS the structure — BV/TV is controlled by
+         adjusting the threshold, not by skeleton+thicken.
 
 Best honeycomb params:
-  python synthetic_trabecular_v15_morphometric_control.py `
-      --voi-dirs data\derived\VOI1 data\derived\VOI4 `
-      --outdir output\honeycomb_test `
-      --num-samples 5 `
-      --xy 128 --z 40 `
-      --voxel-um 39 `
-      --bvtv 0.33 `
-      --tbth-um 180 `
-      --base-sigma 2.5 `
-      --aniso-ratio 1.0 `
-      --warp-amp 1.2 `
-      --warp-sigma 12.0 `
-      --hessian-sigma 1.4 `
-      --proto-q-hi 0.78 `
-      --proto-q-lo 0.65 `
-      --proto-close-iters 3 `
-      --plate-weight 0.7 `
-      --radius-jitter 0.04 `
-      --round-sigma 0.35 `
-      --marrow-mean 15 `
-      --bone-mean 90 `
-      --solid-fill-sigma 0.8 `
-      --noise-sd 5.0 `
+  python synthetic_trabecular_v15_morphometric_control.py \
+      --voi-dirs data/derived/VOI1 data/derived/VOI4 \
+      --outdir output/honeycomb_test \
+      --num-samples 5 \
+      --xy 128 --z 40 \
+      --voxel-um 39 \
+      --bvtv 0.33 \
+      --tbth-um 180 \
+      --base-sigma 2.5 \
+      --aniso-ratio 1.0 \
+      --warp-amp 1.2 \
+      --warp-sigma 12.0 \
+      --plate-weight 0.7 \
+      --rod-weight 0.3 \
+      --proto-close-iters 3 \
+      --marrow-mean 15 \
+      --bone-mean 90 \
+      --solid-fill-sigma 0.8 \
+      --noise-sd 2.0 \
+      --bg-tex-sd 0.5 \
       --base-seed 100
 """
 from __future__ import annotations
@@ -137,9 +133,9 @@ class RidgeParams:
     radius_smooth_sigma: float = 3.0
     radius_scale_hint:   float = 1.0
     prune_small_components:int = 0
-    aniso_ratio:         float = 1.0   # 1.0 = isotropic for plates
-    plate_weight:        float = 0.7   # FIX C: plate field weight
-    rod_weight:          float = 0.3   # complement of plate_weight
+    aniso_ratio:         float = 1.0
+    plate_weight:        float = 0.7
+    rod_weight:          float = 0.3
 
 
 @dataclass
@@ -177,7 +173,7 @@ def compute_adaptive_fill_sigma(r): return float(np.clip(0.35 * r, 0.3, 1.5))
 
 
 # ──────────────────────────────────────────────────────────
-#  FIELD GENERATION — FIX B: Isotropic field for plates
+#  FIELD GENERATION
 # ──────────────────────────────────────────────────────────
 
 def normalize(f):
@@ -199,33 +195,28 @@ def smooth_warp(field, rng, ws, wa):
 def make_isotropic_field(shape, rng, base_sigma):
     """
     FIX B: Pure isotropic Gaussian random field.
-    Unlike max-blend directional fields which produce rods,
-    an isotropic field produces a foam/plate-like network
-    when thresholded — exactly what honeycomb bone looks like.
+    Produces foam/plate-like network when thresholded.
     """
     f = rng.normal(0, 1, size=shape).astype(np.float32)
     f = ndi.gaussian_filter(f, sigma=float(base_sigma))
     return normalize(f)
 
-def plate_likeness_field(f, base_sigma, sheet_q=0.75):
+def plate_likeness_field(f, base_sigma):
     """
-    FIX C: Plate/sheet detector.
-    Uses gradient magnitude to find sheet-like boundaries.
-    High gradient magnitude = bone wall boundary = plate structure.
+    FIX C + FIX D: Continuous plate/sheet detector.
+    Returns a continuous field (NOT binary) so that blending with
+    vesselness produces a smooth response for hysteresis thresholding.
     """
-    # Smooth at two scales then take gradient magnitude
     g1 = ndi.gaussian_filter(f, sigma=max(0.8, base_sigma * 0.6))
     g2 = ndi.gaussian_filter(f, sigma=max(0.8, base_sigma * 1.2))
 
-    # Gradient magnitude at fine scale finds wall boundaries
     gx = ndi.sobel(g1, axis=2); gy = ndi.sobel(g1, axis=1); gz = ndi.sobel(g1, axis=0)
     gmag = np.sqrt(gx**2 + gy**2 + gz**2).astype(np.float32)
     gmag = normalize(gmag)
 
-    # Blend smoothed field with gradient magnitude
-    plate = normalize(0.5 * g2 + 0.5 * gmag)
-    th = float(np.quantile(plate, float(np.clip(sheet_q, 0.55, 0.95))))
-    return (plate >= th).astype(np.float32)
+    # FIX D: Return CONTINUOUS blend — no binary threshold here.
+    # The old code thresholded to 0/1 which made hysteresis meaningless.
+    return normalize(0.5 * g2 + 0.5 * gmag)
 
 def hessian_eigs_3d(f, sigma):
     fxx = ndi.gaussian_filter(f, sigma=sigma, order=(0,0,2))
@@ -319,67 +310,149 @@ def prune_short_end_branches(sk01, lmin):
 
 
 # ──────────────────────────────────────────────────────────
-#  PROTO NETWORK + SKELETON — FIX A, B, C
+#  PROTO NETWORK — FIX D, E
 # ──────────────────────────────────────────────────────────
 
-def make_proto_and_skeleton(shape, rp, rng, skel_mode, fiji_exe, fiji_cmd, dbg):
+def calibrate_bvtv_by_threshold(R, target_bvtv, q_lo_init, q_hi_init,
+                                close_iters, min_component, round_sigma,
+                                tol=0.01, max_iter=30):
     """
-    FIX A: base_sigma floor removed — now respects command line value.
-    FIX B: Isotropic field replaces rod-biased max-blend directional field.
-    FIX C: plate_likeness_field blended with vesselness for honeycomb structure.
+    FIX E (part of): Binary-search the quantile threshold on the
+    continuous response field R to hit a target BV/TV, instead of
+    relying on skeleton+thicken which destroys plate topology.
     """
-    # FIX B: Isotropic Gaussian field — produces foam/honeycomb when thresholded
-    f = make_isotropic_field(shape, rng, float(rp.base_sigma))
+    lo, hi = 0.30, 0.95
+    best_mask = None; best_err = float("inf")
+    st26 = ndi.generate_binary_structure(3, 2)
 
-    # Apply warping for natural variation
+    for _ in range(max_iter):
+        q = 0.5 * (lo + hi)
+        thr = float(np.quantile(R, q))
+        mask = (R >= thr).astype(np.uint8)
+
+        # Morphological cleanup
+        if close_iters > 0:
+            mask = ndi.binary_closing(mask.astype(bool), structure=st26,
+                                       iterations=close_iters).astype(np.uint8)
+        if min_component > 0:
+            mask = remove_small_components(mask, min_component)
+        if round_sigma > 0:
+            mask = anti_block_round(mask, round_sigma)
+
+        bvtv = float(mask.astype(bool).mean())
+        err = abs(bvtv - target_bvtv)
+
+        if err < best_err:
+            best_err = err; best_mask = mask.copy()
+
+        if err < tol:
+            break
+
+        # Higher quantile = less bone, lower quantile = more bone
+        if bvtv > target_bvtv:
+            lo = q  # threshold higher to remove bone
+        else:
+            hi = q  # threshold lower to add bone
+
+    return best_mask, {"bvtv_target": target_bvtv,
+                       "bvtv_got": float(best_mask.astype(bool).mean()),
+                       "best_err": best_err}
+
+
+def make_proto_and_skeleton(shape, rp, rng, skel_mode, fiji_exe, fiji_cmd, dbg,
+                            target_bvtv=None):
+    """
+    FIX A: base_sigma floor removed.
+    FIX B: Isotropic field for foam/honeycomb.
+    FIX C: plate_likeness_field for sheet detection.
+    FIX D: plate field is now continuous (not binary).
+    FIX E: When plate_weight >= 0.5, skip skeletonization entirely.
+           The proto-network IS the bone — BV/TV is controlled by
+           adjusting the threshold on the continuous response field.
+    """
+    # Isotropic Gaussian field
+    f = make_isotropic_field(shape, rng, float(rp.base_sigma))
     f = smooth_warp(f, rng, float(rp.warp_sigma), float(rp.warp_amp))
     f = normalize(f)
 
     # Vesselness (rod/edge detector)
     rod_R = vesselness_ridge(f, sigma=float(rp.hessian_sigma))
-    rod_R = np.clip(rod_R * float(rp.ridge_strength), 0.0, 1.0)
+    rod_R = normalize(np.clip(rod_R * float(rp.ridge_strength), 0.0, 1.0))
 
-    # FIX C: Plate field — detects sheet-like structures
-    plate_R = plate_likeness_field(f, base_sigma=float(rp.base_sigma), sheet_q=0.75)
+    # FIX D: Continuous plate field
+    plate_R = plate_likeness_field(f, base_sigma=float(rp.base_sigma))
 
-    # Blend rod and plate responses
+    # Blend
     pw = float(rp.plate_weight); rw = float(rp.rod_weight)
-    R  = np.clip(rw * rod_R + pw * plate_R, 0.0, 1.0)
+    R = normalize(rw * rod_R + pw * plate_R)
 
-    p01, hy = hysteresis_on_response(R, float(rp.proto_q_lo), float(rp.proto_q_hi))
-    p01 = morph_iters(p01, "close", int(rp.proto_close_iters))
-    p01 = morph_iters(p01, "open",  int(rp.proto_open_iters))
-    p01 = remove_small_components(p01, int(rp.proto_min_component))
+    plate_dominant = pw >= 0.5
 
-    # Extra close pass to ensure honeycomb walls connect
-    st26 = ndi.generate_binary_structure(3, 2)
-    if p01.astype(bool).sum() > 0:
-        p01 = ndi.binary_closing(p01.astype(bool), structure=st26,
-                                  iterations=1).astype(np.uint8)
+    if plate_dominant and target_bvtv is not None:
+        # ── FIX E: plate-dominant path ──────────────────────
+        # Skip skeletonization. Use the continuous response field
+        # directly and binary-search the threshold to hit target BV/TV.
+        print(f"    [plate mode] Calibrating threshold for BV/TV={target_bvtv:.3f}")
+        bone01, cal_info = calibrate_bvtv_by_threshold(
+            R, target_bvtv,
+            q_lo_init=float(rp.proto_q_lo),
+            q_hi_init=float(rp.proto_q_hi),
+            close_iters=int(rp.proto_close_iters),
+            min_component=int(rp.proto_min_component),
+            round_sigma=0.35,
+        )
+        bone01 = keep_largest_component(bone01)
 
-    sr = p01.copy().astype(np.uint8); us = False
-    if bool(rp.use_skeleton) and skel_mode == "skimage":
-        sr = skeletonize_with_skimage(p01); us = True
+        if dbg:
+            save_tif_u8((f - f.min()) / (f.max() - f.min() + 1e-6) * 255, dbg/"field.tif")
+            save_tif_u8(normalize(rod_R) * 127 + 128, dbg/"rod_response.tif")
+            save_tif_u8(normalize(plate_R) * 127 + 128, dbg/"plate_response.tif")
+            save_tif_u8(normalize(R) * 127 + 128, dbg/"blended_response.tif")
+            save_tif_u8((bone01*255).astype(np.uint8), dbg/"proto_network.tif")
 
-    sp, pi = prune_short_end_branches(sr, lmin=int(rp.skeleton_prune_lmin))
-    if int(rp.reconnect_close_iters) > 0:
-        sp = morph_iters(sp, "close", int(rp.reconnect_close_iters))
+        return bone01.astype(np.uint8), {
+            "mode": "plate_direct",
+            "plate_weight": pw, "rod_weight": rw,
+            "calibration": cal_info,
+            "used_skeleton": False,
+        }
 
-    if dbg:
-        save_tif_u8((f - f.min()) / (f.max() - f.min() + 1e-6) * 255, dbg/"field.tif")
-        save_tif_u8((rod_R*255).astype(np.uint8),   dbg/"rod_response.tif")
-        save_tif_u8((plate_R*255).astype(np.uint8), dbg/"plate_response.tif")
-        save_tif_u8((R*255).astype(np.uint8),       dbg/"blended_response.tif")
-        save_tif_u8((p01*255).astype(np.uint8),     dbg/"proto_network.tif")
-        save_tif_u8((sp*255).astype(np.uint8),      dbg/"skeleton_pruned.tif")
+    else:
+        # ── Rod-dominant path: original skeleton+thicken ────
+        p01, hy = hysteresis_on_response(R, float(rp.proto_q_lo), float(rp.proto_q_hi))
+        p01 = morph_iters(p01, "close", int(rp.proto_close_iters))
+        p01 = morph_iters(p01, "open",  int(rp.proto_open_iters))
+        p01 = remove_small_components(p01, int(rp.proto_min_component))
 
-    return sp.astype(np.uint8), {"hysteresis": hy, "used_skeleton": us,
-                                  "skel_mode": skel_mode, "prune": pi,
-                                  "plate_weight": pw, "rod_weight": rw}
+        st26 = ndi.generate_binary_structure(3, 2)
+        if p01.astype(bool).sum() > 0:
+            p01 = ndi.binary_closing(p01.astype(bool), structure=st26,
+                                      iterations=1).astype(np.uint8)
+
+        sr = p01.copy().astype(np.uint8); us = False
+        if bool(rp.use_skeleton) and skel_mode == "skimage":
+            sr = skeletonize_with_skimage(p01); us = True
+
+        sp, pi = prune_short_end_branches(sr, lmin=int(rp.skeleton_prune_lmin))
+        if int(rp.reconnect_close_iters) > 0:
+            sp = morph_iters(sp, "close", int(rp.reconnect_close_iters))
+
+        if dbg:
+            save_tif_u8((f - f.min()) / (f.max() - f.min() + 1e-6) * 255, dbg/"field.tif")
+            save_tif_u8((rod_R*255).astype(np.uint8),   dbg/"rod_response.tif")
+            save_tif_u8(normalize(plate_R) * 127 + 128, dbg/"plate_response.tif")
+            save_tif_u8(normalize(R) * 127 + 128,       dbg/"blended_response.tif")
+            save_tif_u8((p01*255).astype(np.uint8),     dbg/"proto_network.tif")
+            save_tif_u8((sp*255).astype(np.uint8),      dbg/"skeleton_pruned.tif")
+
+        return sp.astype(np.uint8), {"hysteresis": hy, "used_skeleton": us,
+                                      "skel_mode": skel_mode, "prune": pi,
+                                      "plate_weight": pw, "rod_weight": rw,
+                                      "mode": "rod_skeleton"}
 
 
 # ──────────────────────────────────────────────────────────
-#  THICKENING
+#  THICKENING (rod path only)
 # ──────────────────────────────────────────────────────────
 
 def radius_samples_for_skeleton(sk01, rng, br, mode, jit, ss):
@@ -499,7 +572,7 @@ def check_tamimi_bounds(m):
 
 
 # ──────────────────────────────────────────────────────────
-#  MAIN GENERATION
+#  MAIN GENERATION — FIX E: plate vs rod path
 # ──────────────────────────────────────────────────────────
 
 def generate_one(params, args, outdir, label="", seed_override=None):
@@ -514,11 +587,12 @@ def generate_one(params, args, outdir, label="", seed_override=None):
     br = tbth_um_to_radius_vox(tbth, vu)
     bs = float(args.base_sigma) if args.base_sigma is not None \
          else tbn_per_mm_to_base_sigma(tbn, vu)
-    # FIX A: REMOVED bs=max(bs, 4.5) floor — was silently overriding base_sigma
-    # The floor prevented base_sigma < 4.5 regardless of command line argument
-    # This is why changing --base-sigma had no visible effect in previous runs
+    # FIX A: NO base_sigma floor
 
-    print(f"\n  [{label}] seed={seed}")
+    pw = float(args.plate_weight)
+    plate_dominant = pw >= 0.5
+
+    print(f"\n  [{label}] seed={seed}  mode={'plate' if plate_dominant else 'rod'}")
     print(f"    BV/TV={bvtv:.3f} Tb.Th={tbth:.0f}um Tb.N={tbn:.2f}/mm "
           f"sigma={bs:.2f} radius={br:.2f} shape={shape}")
 
@@ -549,16 +623,27 @@ def generate_one(params, args, outdir, label="", seed_override=None):
         noise_sd=float(args.noise_sd), bg_tex_sd=float(args.bg_tex_sd),
     )
 
-    sk01, si  = make_proto_and_skeleton(shape=shape, rp=rp, rng=rng,
-                                         skel_mode=str(args.skeleton_mode),
-                                         fiji_exe=args.fiji_exe,
-                                         fiji_cmd=str(args.fiji_command), dbg=dbg)
-    bone01, ti = thicken_from_skeleton_radius_field(sk01, rng, bvtv, br,
-                                                     str(args.radius_mode),
-                                                     float(args.radius_jitter),
-                                                     float(args.radius_smooth_sigma),
-                                                     float(args.radius_scale_hint), dbg)
-    bone01 = anti_block_round(bone01, float(args.round_sigma))
+    # ── FIX E: pass target_bvtv so plate path can calibrate directly ──
+    result01, si = make_proto_and_skeleton(
+        shape=shape, rp=rp, rng=rng,
+        skel_mode=str(args.skeleton_mode),
+        fiji_exe=args.fiji_exe,
+        fiji_cmd=str(args.fiji_command), dbg=dbg,
+        target_bvtv=bvtv,
+    )
+
+    if plate_dominant:
+        # Plate path: result01 is already the final bone mask with calibrated BV/TV
+        bone01 = result01
+        ti = si  # calibration info is in si
+    else:
+        # Rod path: result01 is a skeleton, need to thicken
+        bone01, ti = thicken_from_skeleton_radius_field(
+            result01, rng, bvtv, br,
+            str(args.radius_mode), float(args.radius_jitter),
+            float(args.radius_smooth_sigma), float(args.radius_scale_hint), dbg)
+        bone01 = anti_block_round(bone01, float(args.round_sigma))
+
     if int(args.min_component_size) > 0:
         bone01 = remove_small_components(bone01, int(args.min_component_size))
     if bool(int(args.enforce_lcc)):
@@ -580,9 +665,14 @@ def generate_one(params, args, outdir, label="", seed_override=None):
     val   = validate_morphometrics(morph, tgt)
     tw    = check_tamimi_bounds(morph)
 
-    met = {"version":"v15_honeycomb","label":label,"seed":seed,
+    # skeleton stats only meaningful for rod path
+    sk_stats = {}
+    if not plate_dominant:
+        sk_stats = skeleton_graph_stats(result01)
+
+    met = {"version":"v15.2_honeycomb","label":label,"seed":seed,
            "morphometrics":morph,"targets":tgt,"validation":val,
-           "tamimi_warnings":tw,"skeleton_stats":skeleton_graph_stats(sk01),
+           "tamimi_warnings":tw,"skeleton_stats":sk_stats,
            "thick_info":ti,"params":{"ridge":asdict(rp),"gray":asdict(gp)},
            "shape_zyx":list(shape),"voxel_um":vu}
     save_json(met, outdir/"metrics.json")
@@ -597,7 +687,7 @@ def generate_one(params, args, outdir, label="", seed_override=None):
 # ──────────────────────────────────────────────────────────
 
 def build_parser():
-    p = argparse.ArgumentParser(description="v15 honeycomb trabecular generator")
+    p = argparse.ArgumentParser(description="v15.2 honeycomb trabecular generator")
     p.add_argument("--voi-dirs",  nargs="+", type=str, default=None)
     p.add_argument("--targets-json", type=str, default=None)
     p.add_argument("--profile",   type=str, default=None, choices=["tamimi-hf","tamimi-hoa"])
@@ -639,11 +729,9 @@ def build_parser():
     p.add_argument("--radius-smooth-sigma", type=float, default=3.0)
     p.add_argument("--radius-scale-hint",   type=float, default=1.0)
     p.add_argument("--aniso-ratio",    type=float, default=1.0)
-    # FIX C: plate/rod weight arguments
     p.add_argument("--plate-weight",   type=float, default=0.7,
-                   help="Weight for plate field (0=pure rod, 1=pure plate, 0.7=honeycomb)")
-    p.add_argument("--rod-weight",     type=float, default=0.3,
-                   help="Weight for vesselness rod field")
+                   help="Weight for plate field (>=0.5 uses plate path, <0.5 uses rod+skeleton path)")
+    p.add_argument("--rod-weight",     type=float, default=0.3)
     p.add_argument("--enforce-lcc",    type=int,   default=1)
     p.add_argument("--min-component-size", type=int, default=500)
     p.add_argument("--round-sigma",    type=float, default=0.35)
@@ -664,13 +752,14 @@ def main():
         print(f"{'='*60}\n  POOLED: {len(args.voi_dirs)} dirs, {args.num_samples} samples")
         print(f"  Gray: marrow={args.marrow_mean}, bone={args.bone_mean}")
         print(f"  Plate weight: {args.plate_weight}  Rod weight: {args.rod_weight}")
+        pw = float(args.plate_weight)
+        print(f"  Mode: {'PLATE (no skeleton)' if pw >= 0.5 else 'ROD (skeleton+thicken)'}")
         print(f"{'='*60}")
         pooled = load_all_voi_targets(args.voi_dirs, voxel_um=float(args.voxel_um))
         save_json(pooled, Path(args.outdir)/"pooled_statistics.json")
         prng    = np.random.default_rng(int(args.base_seed))
         samples = sample_targets_from_pool(pooled, prng, int(args.num_samples))
 
-        # Apply CLI overrides
         for s in samples:
             if args.bvtv       is not None: s["bvtv"]       = float(args.bvtv)
             if args.tbth_um    is not None: s["tbth_um"]    = float(args.tbth_um)
@@ -696,7 +785,7 @@ def main():
                              seed_override=int(args.base_seed)+s["sample_index"]+1)
             am.append(m)
 
-        save_json({"version":"v15_honeycomb","n":len(am),"pooled":pooled,
+        save_json({"version":"v15.2_honeycomb","n":len(am),"pooled":pooled,
                    "gray":{"marrow":args.marrow_mean,"bone":args.bone_mean},
                    "samples":[{"label":m["label"],"seed":m["seed"],
                                 "bvtv":m["targets"]["bvtv_target"],
