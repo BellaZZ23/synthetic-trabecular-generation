@@ -1,0 +1,356 @@
+{
+  "version": "1.0",
+  "labels": [
+    "BVTV",
+    "TbTh_um_p50",
+    "TbN_per_mm",
+    "TbSp_um_p50"
+  ],
+  "results": {
+    "Classical Ridge \u2014 pca": {
+      "method": "Classical Ridge (RidgeCV, 5-fold)",
+      "mean_r2": 0.909376323223114,
+      "mean_mae": 5.37713898695074,
+      "n_train": 400,
+      "n_test": 100,
+      "per_label": {
+        "BVTV": {
+          "r2": 0.8357845544815063,
+          "mae": 0.011931194923818111,
+          "rmse": 0.015042885148983238,
+          "best_alpha": 0.1
+        },
+        "TbTh_um_p50": {
+          "r2": 0.9221168160438538,
+          "mae": 7.347443103790283,
+          "rmse": 9.060673391483046,
+          "best_alpha": 0.1
+        },
+        "TbN_per_mm": {
+          "r2": 0.9442890882492065,
+          "mae": 0.08326368033885956,
+          "rmse": 0.10833771181733967,
+          "best_alpha": 0.01
+        },
+        "TbSp_um_p50": {
+          "r2": 0.9353148341178894,
+          "mae": 14.06591796875,
+          "rmse": 18.49013276765813,
+          "best_alpha": 0.1
+        }
+      }
+    },
+    "Quantum Kernel Ridge \u2014 pca": {
+      "mean_r2": -2.7122429805157946,
+      "mean_mae": 29.61617054440736,
+      "alpha": 0.01,
+      "method": "Quantum Kernel Ridge (ZZ)",
+      "cv_type": "single split with alpha grid search",
+      "kernel_time_s": 6335.691560745239,
+      "circuit_depth": 1,
+      "n_qubits": 8,
+      "feature_map": "ZZ",
+      "reps": 2,
+      "n_train": 400,
+      "n_test": 100,
+      "per_label": {
+        "BVTV": {
+          "r2": -7.0914724635488575,
+          "mae": 0.08910652956996891,
+          "rmse": 0.10559368150226545
+        },
+        "TbTh_um_p50": {
+          "r2": -1.2279234943419275,
+          "mae": 38.95787879745441,
+          "rmse": 48.460590825810726
+        },
+        "TbN_per_mm": {
+          "r2": -1.6944003170180215,
+          "mae": 0.6032030481070856,
+          "rmse": 0.7534259995533559
+        },
+        "TbSp_um_p50": {
+          "r2": -0.8351756471543723,
+          "mae": 78.81449380249798,
+          "rmse": 98.48645236100145
+        }
+      }
+    },
+    "Classical Ridge \u2014 rp_gaussian": {
+      "method": "Classical Ridge (RidgeCV, 5-fold)",
+      "mean_r2": 0.9101563990116119,
+      "mean_mae": 5.403560779057443,
+      "n_train": 400,
+      "n_test": 100,
+      "per_label": {
+        "BVTV": {
+          "r2": 0.8457211256027222,
+          "mae": 0.011275384575128555,
+          "rmse": 0.014580665213741077,
+          "best_alpha": 0.01
+        },
+        "TbTh_um_p50": {
+          "r2": 0.9288190603256226,
+          "mae": 6.988039493560791,
+          "rmse": 8.662046178954927,
+          "best_alpha": 0.1
+        },
+        "TbN_per_mm": {
+          "r2": 0.9328113198280334,
+          "mae": 0.09444140642881393,
+          "rmse": 0.11897549363751495,
+          "best_alpha": 0.01
+        },
+        "TbSp_um_p50": {
+          "r2": 0.9332740902900696,
+          "mae": 14.520486831665039,
+          "rmse": 18.779542156646983,
+          "best_alpha": 0.01
+        }
+      }
+    },
+    "Quantum Kernel Ridge \u2014 rp_gaussian": {
+      "mean_r2": -2.09837304564587,
+      "mean_mae": 24.789225582205184,
+      "alpha": 0.01,
+      "method": "Quantum Kernel Ridge (ZZ)",
+      "cv_type": "single split with alpha grid search",
+      "kernel_time_s": 2605.081576347351,
+      "circuit_depth": 1,
+      "n_qubits": 8,
+      "feature_map": "ZZ",
+      "reps": 2,
+      "n_train": 400,
+      "n_test": 100,
+      "per_label": {
+        "BVTV": {
+          "r2": -5.902404433845469,
+          "mae": 0.0801488424903025,
+          "rmse": 0.09752688490341
+        },
+        "TbTh_um_p50": {
+          "r2": -0.6128432624591644,
+          "mae": 32.84713171881586,
+          "rmse": 41.232023639083074
+        },
+        "TbN_per_mm": {
+          "r2": -1.5635492071465285,
+          "mae": 0.5706884738235464,
+          "rmse": 0.7349035944567914
+        },
+        "TbSp_um_p50": {
+          "r2": -0.31469527913231765,
+          "mae": 65.65893329369102,
+          "rmse": 83.3585644238829
+        }
+      }
+    },
+    "Classical Ridge \u2014 rp_sparse": {
+      "method": "Classical Ridge (RidgeCV, 5-fold)",
+      "mean_r2": 0.9137498289346695,
+      "mean_mae": 5.381780126830563,
+      "n_train": 400,
+      "n_test": 100,
+      "per_label": {
+        "BVTV": {
+          "r2": 0.8550248742103577,
+          "mae": 0.010859510861337185,
+          "rmse": 0.014134189004839783,
+          "best_alpha": 0.01
+        },
+        "TbTh_um_p50": {
+          "r2": 0.921799898147583,
+          "mae": 7.229326248168945,
+          "rmse": 9.079088905098335,
+          "best_alpha": 0.1
+        },
+        "TbN_per_mm": {
+          "r2": 0.9410094618797302,
+          "mae": 0.08911217749118805,
+          "rmse": 0.11148093427442388,
+          "best_alpha": 0.01
+        },
+        "TbSp_um_p50": {
+          "r2": 0.9371650815010071,
+          "mae": 14.197822570800781,
+          "rmse": 18.22376780170953,
+          "best_alpha": 0.01
+        }
+      }
+    },
+    "Quantum Kernel Ridge \u2014 rp_sparse": {
+      "mean_r2": -1.562509256013288,
+      "mean_mae": 21.757536443774843,
+      "alpha": 0.01,
+      "method": "Quantum Kernel Ridge (ZZ)",
+      "cv_type": "single split with alpha grid search",
+      "kernel_time_s": 4405.751744031906,
+      "circuit_depth": 1,
+      "n_qubits": 8,
+      "feature_map": "ZZ",
+      "reps": 2,
+      "n_train": 400,
+      "n_test": 100,
+      "per_label": {
+        "BVTV": {
+          "r2": -4.678439502010348,
+          "mae": 0.06997188977851637,
+          "rmse": 0.08845831309073143
+        },
+        "TbTh_um_p50": {
+          "r2": -0.16171664022037646,
+          "mae": 29.41880672370285,
+          "rmse": 34.99360401881703
+        },
+        "TbN_per_mm": {
+          "r2": -1.459420756611789,
+          "mae": 0.5282841892939013,
+          "rmse": 0.7198233981963098
+        },
+        "TbSp_um_p50": {
+          "r2": 0.04953987478936084,
+          "mae": 57.013082972324106,
+          "rmse": 70.87688556993156
+        }
+      }
+    },
+    "Classical Ridge \u2014 pls": {
+      "method": "Classical Ridge (RidgeCV, 5-fold)",
+      "mean_r2": 0.9087738671504879,
+      "mean_mae": 5.330753233412851,
+      "n_train": 400,
+      "n_test": 100,
+      "per_label": {
+        "BVTV": {
+          "r2": 0.8323852230263499,
+          "mae": 0.011700281019134022,
+          "rmse": 0.015197785241581007,
+          "best_alpha": 1.0
+        },
+        "TbTh_um_p50": {
+          "r2": 0.9250644288930666,
+          "mae": 7.258772723239579,
+          "rmse": 8.887560678156584,
+          "best_alpha": 1.0
+        },
+        "TbN_per_mm": {
+          "r2": 0.9415285265646741,
+          "mae": 0.08606362306424913,
+          "rmse": 0.11098941476613522,
+          "best_alpha": 0.1
+        },
+        "TbSp_um_p50": {
+          "r2": 0.936117290117861,
+          "mae": 13.966476306328444,
+          "rmse": 18.37508430233074,
+          "best_alpha": 1.0
+        }
+      }
+    },
+    "Quantum Kernel Ridge \u2014 pls": {
+      "mean_r2": 0.18462022566557593,
+      "mean_mae": 15.923791923258273,
+      "alpha": 0.01,
+      "method": "Quantum Kernel Ridge (ZZ)",
+      "cv_type": "single split with alpha grid search",
+      "kernel_time_s": 1558.3770549297333,
+      "circuit_depth": 1,
+      "n_qubits": 4,
+      "feature_map": "ZZ",
+      "reps": 2,
+      "n_train": 400,
+      "n_test": 100,
+      "per_label": {
+        "BVTV": {
+          "r2": -0.374275886090911,
+          "mae": 0.03246634939709207,
+          "rmse": 0.04351721708548308
+        },
+        "TbTh_um_p50": {
+          "r2": 0.39318578808914273,
+          "mae": 19.583395733448768,
+          "rmse": 25.29102552288517
+        },
+        "TbN_per_mm": {
+          "r2": 0.30921956782788773,
+          "mae": 0.27662635425997023,
+          "rmse": 0.3814868356096764
+        },
+        "TbSp_um_p50": {
+          "r2": 0.41035143283618425,
+          "mae": 43.80267925592726,
+          "rmse": 55.82571560148347
+        }
+      }
+    },
+    "Classical Ridge \u2014 umap": {
+      "method": "Classical Ridge (RidgeCV, 5-fold)",
+      "mean_r2": 0.8582184463739395,
+      "mean_mae": 6.7881724673788995,
+      "n_train": 400,
+      "n_test": 100,
+      "per_label": {
+        "BVTV": {
+          "r2": 0.8058890700340271,
+          "mae": 0.011334466747939587,
+          "rmse": 0.01635494587079295,
+          "best_alpha": 1.0
+        },
+        "TbTh_um_p50": {
+          "r2": 0.8888180255889893,
+          "mae": 8.293590545654297,
+          "rmse": 10.825696003940187,
+          "best_alpha": 0.01
+        },
+        "TbN_per_mm": {
+          "r2": 0.861147403717041,
+          "mae": 0.12396038323640823,
+          "rmse": 0.17103559711987998,
+          "best_alpha": 0.1
+        },
+        "TbSp_um_p50": {
+          "r2": 0.8770192861557007,
+          "mae": 18.723804473876953,
+          "rmse": 25.49506524900027,
+          "best_alpha": 0.01
+        }
+      }
+    },
+    "Quantum Kernel Ridge \u2014 umap": {
+      "mean_r2": -0.36589766079594366,
+      "mean_mae": 18.425854947635898,
+      "alpha": 0.01,
+      "method": "Quantum Kernel Ridge (ZZ)",
+      "cv_type": "single split with alpha grid search",
+      "kernel_time_s": 5389.175272226334,
+      "circuit_depth": 1,
+      "n_qubits": 8,
+      "feature_map": "ZZ",
+      "reps": 2,
+      "n_train": 400,
+      "n_test": 100,
+      "per_label": {
+        "BVTV": {
+          "r2": -1.657398524804052,
+          "mae": 0.04649829689198719,
+          "rmse": 0.06051353117585833
+        },
+        "TbTh_um_p50": {
+          "r2": -0.041995214990065755,
+          "mae": 24.51954509253397,
+          "rmse": 33.141444250541234
+        },
+        "TbN_per_mm": {
+          "r2": 0.16745688361949496,
+          "mae": 0.30280842512399025,
+          "rmse": 0.4188060141876301
+        },
+        "TbSp_um_p50": {
+          "r2": 0.0683462129908482,
+          "mae": 48.83456797599365,
+          "rmse": 70.17217726933652
+        }
+      }
+    }
+  }
+}
