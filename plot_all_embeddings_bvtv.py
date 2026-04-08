@@ -15,6 +15,7 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.gridspec import GridSpec
 
 METHODS = [
     ("pca",          "PCA"),
@@ -34,7 +35,6 @@ def load_method(features_dir: Path, key: str):
         print(f"  WARNING: {fname} not found, skipping")
         return None, None
     data = np.load(fname)
-    # Use 0-1 scaled if available, otherwise fall back to Z_train
     Z = data["Z_train_01"] if "Z_train_01" in data else data["Z_train"]
     Y = data["Y_train"]
     return Z, Y
@@ -45,10 +45,9 @@ def main():
     parser.add_argument("--features-dir", type=str,
                         default="output/v8_dataset/features",
                         help="Directory containing *_quantum_ready.npz files")
-    parser.add_argument("--outfile", type=str,
-                        default=None,
+    parser.add_argument("--outfile", type=str, default=None,
                         help="Output PNG path (default: <features-dir>/all_methods_bvtv.png)")
-    parser.add_argument("--dpi", type=int, default=200)
+    parser.add_argument("--dpi", type=int, default=300)
     args = parser.parse_args()
 
     features_dir = Path(args.features_dir)
@@ -66,34 +65,49 @@ def main():
         return
 
     n = len(available)
-    fig, axes = plt.subplots(1, n, figsize=(4.5 * n, 4), constrained_layout=True)
-    if n == 1:
-        axes = [axes]
 
-    # Shared colour limits from BV/TV range
+    # --- Layout: GridSpec with dedicated colorbar column ---
+    fig = plt.figure(figsize=(3.2 * n + 0.6, 3.6))
+    gs = GridSpec(1, n + 1, figure=fig,
+                  width_ratios=[1] * n + [0.05],
+                  wspace=0.35)
+
+    axes = [fig.add_subplot(gs[0, i]) for i in range(n)]
+    cax = fig.add_subplot(gs[0, n])
+
+    # Shared colour limits
     all_bvtv = np.concatenate([Y[:, BVTV_LABEL_IDX] for _, _, _, Y in available])
     vmin, vmax = all_bvtv.min(), all_bvtv.max()
 
-    for ax, (key, label, Z, Y) in zip(axes, available):
+    for i, (ax, (key, label, Z, Y)) in enumerate(zip(axes, available)):
         bvtv = Y[:, BVTV_LABEL_IDX]
-        sc = ax.scatter(Z[:, 0], Z[:, 1],
-                        c=bvtv, cmap="viridis", s=18, alpha=0.7,
-                        vmin=vmin, vmax=vmax, edgecolors="none")
-        ax.set_title(label, fontsize=13, fontweight="bold")
-        ax.set_xlabel("Component 1", fontsize=10)
-        if ax == axes[0]:
-            ax.set_ylabel("Component 2", fontsize=10)
-        ax.tick_params(labelsize=8)
+        sc = ax.scatter(
+            Z[:, 0], Z[:, 1],
+            c=bvtv, cmap="viridis", s=14, alpha=0.75,
+            vmin=vmin, vmax=vmax, edgecolors="none", rasterized=True,
+        )
+        ax.set_title(label, fontsize=11, fontweight="bold", pad=6)
+        ax.set_xlabel("Component 1", fontsize=8.5)
+        if i == 0:
+            ax.set_ylabel("Component 2", fontsize=8.5)
+        else:
+            ax.set_yticklabels([])
+        ax.tick_params(labelsize=7, direction="in", top=True, right=True)
+        ax.set_aspect("auto")
 
-    # Single shared colourbar on the right
-    cbar = fig.colorbar(sc, ax=axes, location="right", shrink=0.85, pad=0.02)
-    cbar.set_label("BV/TV", fontsize=11)
+    # Colorbar in dedicated axis
+    cbar = fig.colorbar(sc, cax=cax)
+    cbar.set_label("BV/TV", fontsize=9)
+    cbar.ax.tick_params(labelsize=7)
 
-    fig.suptitle("Dimensionality Reduction — 2D Embeddings Coloured by BV/TV",
-                 fontsize=14, fontweight="bold", y=1.02)
+    # Suptitle with enough clearance above panel titles
+    fig.suptitle(
+        "Dimensionality Reduction — 2D Embeddings Coloured by BV/TV",
+        fontsize=12, fontweight="bold", y=1.04,
+    )
 
     outfile.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(outfile, dpi=args.dpi, bbox_inches="tight")
+    fig.savefig(outfile, dpi=args.dpi, bbox_inches="tight", facecolor="white")
     plt.close()
     print(f"Saved: {outfile}")
 
