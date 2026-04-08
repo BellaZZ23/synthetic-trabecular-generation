@@ -34,10 +34,8 @@ def load_method(features_dir: Path, key: str):
         print(f"  WARNING: {fname} not found, skipping")
         return None, None
     data = np.load(fname)
-    # Use the [0, pi] scaled version for consistency with what quantum sees,
-    # but [0,1] version works too — the scatter shape is the same.
-    # We use the 0-1 version for cleaner axis labels.
-    Z = data["Z_train_01"]
+    # Use 0-1 scaled if available, otherwise fall back to Z_train
+    Z = data["Z_train_01"] if "Z_train_01" in data else data["Z_train"]
     Y = data["Y_train"]
     return Z, Y
 
