@@ -1,0 +1,101 @@
+{
+  "task": "classify-tbn",
+  "n_qubits": 8,
+  "feature_map": "ZZ",
+  "reps": 2,
+  "cv": "5x5",
+  "results": {
+    "pca": {
+      "classical": {
+        "accuracy": 0.982,
+        "accuracy_std": 0.007483314773547889,
+        "f1_score": 0.9819953972339361,
+        "f1_std": 0.007487382954773183,
+        "n_evaluations": 25,
+        "cv_type": "RepeatedStratifiedKFold(5x5)"
+      },
+      "quantum": {
+        "accuracy": 0.9280000000000002,
+        "accuracy_std": 0.014696938456699041,
+        "f1_score": 0.9278887528584951,
+        "f1_std": 0.014827551077218488,
+        "n_evaluations": 25,
+        "cv_type": "RepeatedStratifiedKFold(5x5)",
+        "kernel_time_s": 32954.74403190613,
+        "circuit_depth": 1,
+        "n_qubits": 8,
+        "feature_map": "ZZ",
+        "reps": 2
+      }
+    },
+    "rp_gaussian": {
+      "classical": {
+        "accuracy": 0.9823999999999999,
+        "accuracy_std": 0.008138795979750328,
+        "f1_score": 0.982395597830659,
+        "f1_std": 0.008142751280160008,
+        "n_evaluations": 25,
+        "cv_type": "RepeatedStratifiedKFold(5x5)"
+      },
+      "quantum": {
+        "accuracy": 0.9212,
+        "accuracy_std": 0.02065332902948092,
+        "f1_score": 0.9208754684141266,
+        "f1_std": 0.020926156361097143,
+        "n_evaluations": 25,
+        "cv_type": "RepeatedStratifiedKFold(5x5)",
+        "kernel_time_s": 4056.5966131687164,
+        "circuit_depth": 1,
+        "n_qubits": 8,
+        "feature_map": "ZZ",
+        "reps": 2
+      }
+    },
+    "pls": {
+      "classical": {
+        "accuracy": 0.9856,
+        "accuracy_std": 0.008522910301065015,
+        "f1_score": 0.9855967989115838,
+        "f1_std": 0.008526047025907136,
+        "n_evaluations": 25,
+        "cv_type": "RepeatedStratifiedKFold(5x5)"
+      },
+      "quantum": {
+        "accuracy": 0.9296000000000001,
+        "accuracy_std": 0.020095770699328726,
+        "f1_score": 0.9295695655195269,
+        "f1_std": 0.020106455533707792,
+        "n_evaluations": 25,
+        "cv_type": "RepeatedStratifiedKFold(5x5)",
+        "kernel_time_s": 802.3921220302582,
+        "circuit_depth": 1,
+        "n_qubits": 4,
+        "feature_map": "ZZ",
+        "reps": 2
+      }
+    },
+    "umap": {
+      "classical": {
+        "accuracy": 0.9772,
+        "accuracy_std": 0.012812493902437584,
+        "f1_score": 0.9771941949010673,
+        "f1_std": 0.012818012321980857,
+        "n_evaluations": 25,
+        "cv_type": "RepeatedStratifiedKFold(5x5)"
+      },
+      "quantum": {
+        "accuracy": 0.9764,
+        "accuracy_std": 0.012611106216347569,
+        "f1_score": 0.9763932336517605,
+        "f1_std": 0.012618992548850367,
+        "n_evaluations": 25,
+        "cv_type": "RepeatedStratifiedKFold(5x5)",
+        "kernel_time_s": 12132.936383485794,
+        "circuit_depth": 1,
+        "n_qubits": 8,
+        "feature_map": "ZZ",
+        "reps": 2
+      }
+    }
+  }
+}

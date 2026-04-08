@@ -1,0 +1,110 @@
+{
+  "version": "v15_honeycomb",
+  "label": "sample_003",
+  "seed": 104,
+  "morphometrics": {
+    "BVTV": 0.3589813232421875,
+    "TbTh_um_p50": 110.30865786510142,
+    "TbTh_um_p90": 234.0,
+    "TbSp_um_p50": 156.0,
+    "TbSp_um_p90": 291.8492761683674,
+    "TbN_per_mm": 2.7405590988649706,
+    "Euler": -423.0,
+    "ConnProxy": 424.0,
+    "n_components": 1,
+    "lcc_frac": 1.0
+  },
+  "targets": {
+    "bvtv_target": 0.36,
+    "tbth_um_target": 150.0,
+    "tbn_target": 2.4,
+    "tbsp_um_target": 595.0480358521751
+  },
+  "validation": {
+    "BV/TV": {
+      "measured": 0.3589813232421875,
+      "target": 0.36,
+      "rel_error": 0.00282965766059021,
+      "pass": true
+    },
+    "Tb.Th": {
+      "measured": 110.30865786510142,
+      "target": 150.0,
+      "rel_error": 0.2646089475659905,
+      "pass": false
+    },
+    "Tb.N": {
+      "measured": 2.7405590988649706,
+      "target": 2.4,
+      "rel_error": 0.14189962452707114,
+      "pass": true
+    },
+    "Tb.Sp": {
+      "measured": 156.0,
+      "target": 595.0480358521751,
+      "rel_error": 0.7378362911885078,
+      "pass": false
+    },
+    "LCC": {
+      "lcc_frac": 1.0,
+      "pass": true
+    }
+  },
+  "tamimi_warnings": [],
+  "skeleton_stats": {
+    "skel_voxels": 90640,
+    "junctions": 89348,
+    "endpoints": 380,
+    "ej_ratio": 0.004253033084120518
+  },
+  "thick_info": {
+    "base_r": 1.9230769230769231,
+    "min_r": 0.5769230769230769,
+    "scale": 0.8939880430698395,
+    "bvtv_tgt": 0.36,
+    "bvtv_got": 0.36011810302734376,
+    "warn_target_miss": false
+  },
+  "params": {
+    "ridge": {
+      "base_sigma": 2.5,
+      "warp_sigma": 10.0,
+      "warp_amp": 1.5,
+      "hessian_sigma": 1.4,
+      "ridge_strength": 1.0,
+      "proto_q_hi": 0.78,
+      "proto_q_lo": 0.65,
+      "proto_close_iters": 1,
+      "proto_open_iters": 0,
+      "proto_min_component": 400,
+      "use_skeleton": true,
+      "skeleton_prune_lmin": 8,
+      "reconnect_close_iters": 3,
+      "radius_mode": "branch",
+      "radius_jitter": 0.04,
+      "radius_smooth_sigma": 3.0,
+      "radius_scale_hint": 1.0,
+      "prune_small_components": 0,
+      "aniso_ratio": 1.0,
+      "plate_weight": 0.7,
+      "rod_weight": 0.3
+    },
+    "gray": {
+      "write_gray": true,
+      "marrow_mean": 15.0,
+      "bone_mean": 90.0,
+      "solid_fill_sigma": 0.8,
+      "pve_sigma": 0.5,
+      "noise_sd": 2.0,
+      "bg_tex_sd": 0.5,
+      "unsharp": 0.6,
+      "unsharp_sigma": 0.8
+    }
+  },
+  "shape_zyx": [
+    40,
+    128,
+    128
+  ],
+  "voxel_um": 39.0
+}
