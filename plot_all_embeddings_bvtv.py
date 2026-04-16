@@ -66,11 +66,13 @@ def main():
 
     n = len(available)
 
-    # --- Layout: GridSpec with dedicated colorbar column ---
-    fig = plt.figure(figsize=(3.2 * n + 0.6, 3.6))
-    gs = GridSpec(1, n + 1, figure=fig,
-                  width_ratios=[1] * n + [0.05],
-                  wspace=0.35)
+    # Slightly taller figure gives titles more breathing room
+    fig = plt.figure(figsize=(3.2 * n + 0.8, 4.2))
+    gs = GridSpec(
+        1, n + 1, figure=fig,
+        width_ratios=[1] * n + [0.05],
+        wspace=0.35
+    )
 
     axes = [fig.add_subplot(gs[0, i]) for i in range(n)]
     cax = fig.add_subplot(gs[0, n])
@@ -79,6 +81,7 @@ def main():
     all_bvtv = np.concatenate([Y[:, BVTV_LABEL_IDX] for _, _, _, Y in available])
     vmin, vmax = all_bvtv.min(), all_bvtv.max()
 
+    sc = None
     for i, (ax, (key, label, Z, Y)) in enumerate(zip(axes, available)):
         bvtv = Y[:, BVTV_LABEL_IDX]
         sc = ax.scatter(
@@ -86,7 +89,7 @@ def main():
             c=bvtv, cmap="viridis", s=14, alpha=0.75,
             vmin=vmin, vmax=vmax, edgecolors="none", rasterized=True,
         )
-        ax.set_title(label, fontsize=11, fontweight="bold", pad=6)
+        ax.set_title(label, fontsize=11, fontweight="bold", pad=10)
         ax.set_xlabel("Component 1", fontsize=8.5)
         if i == 0:
             ax.set_ylabel("Component 2", fontsize=8.5)
@@ -95,15 +98,17 @@ def main():
         ax.tick_params(labelsize=7, direction="in", top=True, right=True)
         ax.set_aspect("auto")
 
-    # Colorbar in dedicated axis
+    # Colorbar
     cbar = fig.colorbar(sc, cax=cax)
     cbar.set_label("BV/TV", fontsize=9)
     cbar.ax.tick_params(labelsize=7)
 
-    # Suptitle with enough clearance above panel titles
+    # Reserve space at top so suptitle does not overlap subplot titles
+    fig.subplots_adjust(top=0.80)
+
     fig.suptitle(
         "Dimensionality Reduction — 2D Embeddings Coloured by BV/TV",
-        fontsize=12, fontweight="bold", y=1.04,
+        fontsize=12, fontweight="bold", y=0.96,
     )
 
     outfile.parent.mkdir(parents=True, exist_ok=True)
