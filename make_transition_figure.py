@@ -228,12 +228,12 @@ def render_volume(
     ax.view_init(elev=elev, azim=azim)
 
     # ── Clean axes: no labels, no ticks, no panes, no grid ────────
-    ax.set_xticklabels([])
-    ax.set_yticklabels([])
-    ax.set_zticklabels([])
-    ax.set_xticks([])
-    ax.set_yticks([])
-    ax.set_zticks([])
+    ax.tick_params(
+        axis="both", which="both",
+        labelbottom=False, labelleft=False,
+        bottom=False, left=False, right=False, top=False,
+        labelsize=0, length=0,
+    )
     ax.set_xlabel("")
     ax.set_ylabel("")
     ax.set_zlabel("")
