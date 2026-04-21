@@ -130,17 +130,18 @@ def significance_label(p):
 
 def plot_results(results, outdir, task_label):
     """
-    Bar chart with error bars and THREE significance annotations:
-      - Wilcoxon (uncorrected)
-      - Nadeau-Bengio (corrected)
-      - 5×2 CV (gold standard)
+    Publication-quality bar chart.
+    - Single significance bracket per pair (5×2 CV, the most rigorous test)
+    - Zoomed y-axis (0.45–0.90) to maximise visual dynamic range
+    - Clean value labels inside bars
+    - p-value summary table below x-axis
     """
     methods = [m for m in METHODS if m in results]
     n = len(methods)
 
-    fig, ax = plt.subplots(figsize=(max(10, n * 2.5), 7))
+    fig, ax = plt.subplots(figsize=(max(8, n * 2.2), 5.5))
     x = np.arange(n)
-    w = 0.35
+    w = 0.32
 
     c_acc = [results[m]["classical_mean"] for m in methods]
     c_std = [results[m]["classical_std"] for m in methods]
@@ -148,59 +149,99 @@ def plot_results(results, outdir, task_label):
     q_std = [results[m]["quantum_std"] for m in methods]
 
     b1 = ax.bar(x - w/2, c_acc, w, yerr=c_std, capsize=4,
-                label="Classical SVM (RBF)", color="#4472C4", alpha=0.85)
+                label="Classical SVM (RBF)", color="#4472C4", alpha=0.88,
+                edgecolor="white", linewidth=0.5)
     b2 = ax.bar(x + w/2, q_acc, w, yerr=q_std, capsize=4,
-                label="Quantum SVM (ZZ)", color="#ED7D31", alpha=0.85)
+                label="Quantum SVM (ZZ)", color="#ED7D31", alpha=0.88,
+                edgecolor="white", linewidth=0.5)
 
-    # Value labels on bars
-    for bars in [b1, b2]:
+    # Value labels inside bars (white text, avoids error bar clutter)
+    for bars, is_quantum in [(b1, False), (b2, True)]:
         for b in bars:
             h = b.get_height()
             if h > 0:
-                ax.text(b.get_x() + b.get_width()/2, h + 0.025,
-                        f"{h:.3f}", ha="center", fontsize=8)
+                ax.text(b.get_x() + b.get_width()/2, h - 0.025,
+                        f"{h:.3f}", ha="center", va="top",
+                        fontsize=8.5, fontweight="bold", color="white")
 
-    # Significance brackets
+    # Significance brackets (5×2 CV only — the gold standard)
     for i, m in enumerate(methods):
         r = results[m]
-        y_top = max(c_acc[i] + c_std[i], q_acc[i] + q_std[i]) + 0.06
-        bracket_h = 0.015
+        y_top = max(c_acc[i] + c_std[i], q_acc[i] + q_std[i]) + 0.02
+        bracket_h = 0.012
 
-        # Bracket line
+        # Bracket
         ax.plot([i - w/2, i - w/2, i + w/2, i + w/2],
                 [y_top, y_top + bracket_h, y_top + bracket_h, y_top],
-                color="black", linewidth=1.0)
+                color="black", linewidth=1.0, clip_on=False)
 
-        # 5×2 CV label (primary, bold)
+        # 5×2 CV significance label
         p_5x2 = r["5x2cv"]["p_value"]
-        sig_5x2 = significance_label(p_5x2)
-        ax.text(i, y_top + bracket_h + 0.008,
-                f"{sig_5x2}",
+        sig = significance_label(p_5x2)
+        ax.text(i, y_top + bracket_h + 0.008, sig,
                 ha="center", fontsize=11, fontweight="bold")
 
-        # Smaller annotation with all three p-values
-        p_wilcox = r["wilcoxon"]["p_value"]
-        p_nb = r["nadeau_bengio"]["p_value"]
-        detail = f"W:{significance_label(p_wilcox)} NB:{significance_label(p_nb)} 5×2:{sig_5x2}"
-        ax.text(i, y_top + bracket_h + 0.038,
-                detail, ha="center", fontsize=6.5, color="gray")
-
+    # Axes
     ax.set_ylabel("Accuracy", fontsize=11)
-    ax.set_ylim(0, 1.05)
-    ax.set_title(f"Classical vs Quantum SVM — {task_label}", fontsize=13,
-                 fontweight="bold")
+    ax.set_ylim(0.45, 0.90)
+    ax.set_title(f"Classical vs Quantum SVM — {task_label}",
+                 fontsize=13, fontweight="bold", pad=12)
     ax.set_xticks(x)
-    ax.set_xticklabels([LABELS[m] for m in methods], fontsize=10)
-    ax.axhline(0.5, color="gray", ls="--", alpha=0.5, label="Random baseline")
-    ax.legend(loc="lower left", fontsize=9)
+    ax.set_xticklabels([LABELS[m] for m in methods], fontsize=10.5)
+    ax.axhline(0.5, color="gray", ls="--", alpha=0.5, lw=1,
+               label="Random baseline")
+    ax.legend(loc="upper right", fontsize=9, framealpha=0.9)
+    ax.tick_params(axis="y", labelsize=9)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
 
-    # Significance key
-    fig.text(0.98, 0.02,
-             "n.s.: p≥0.05  *: p<0.05  **: p<0.01  ***: p<0.001\n"
-             "W = Wilcoxon  NB = Nadeau-Bengio  5×2 = Dietterich 5×2 CV",
-             ha="right", fontsize=7.5, color="gray", style="italic")
+    # ── p-value table below x-axis ────────────────────────────────
+    col_headers = [""] + [LABELS[m] for m in methods]
+    row_wilcox = ["Wilcoxon"]
+    row_nb     = ["Nadeau-Bengio"]
+    row_5x2    = ["5×2 CV"]
 
-    plt.tight_layout()
+    for m in methods:
+        r = results[m]
+        pw = r["wilcoxon"]["p_value"]
+        pn = r["nadeau_bengio"]["p_value"]
+        p5 = r["5x2cv"]["p_value"]
+
+        fmt = lambda p: f"p<0.001" if p < 0.001 else f"p={p:.3f}"
+        row_wilcox.append(fmt(pw))
+        row_nb.append(fmt(pn))
+        row_5x2.append(fmt(p5))
+
+    table = ax.table(
+        cellText=[row_wilcox, row_nb, row_5x2],
+        colLabels=col_headers,
+        cellLoc="center",
+        loc="bottom",
+        bbox=[0.0, -0.38, 1.0, 0.22],
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(8)
+
+    # Style the table
+    for (row, col), cell in table.get_celld().items():
+        cell.set_edgecolor("#cccccc")
+        cell.set_linewidth(0.5)
+        if row == 0:  # header row
+            cell.set_facecolor("#e8e8e8")
+            cell.set_text_props(fontweight="bold", fontsize=8)
+        elif col == 0:  # row labels
+            cell.set_text_props(fontweight="bold", fontsize=7.5)
+            cell.set_facecolor("#f5f5f5")
+        else:
+            cell.set_facecolor("white")
+
+    # Key
+    fig.text(0.98, 0.01,
+             "n.s.: p≥0.05   *: p<0.05   **: p<0.01   ***: p<0.001     "
+             "Brackets show Dietterich 5×2 CV test (df=5)",
+             ha="right", fontsize=7, color="gray", style="italic")
+
+    plt.subplots_adjust(bottom=0.30)
     out_path = outdir / "accuracy_comparison_corrected.png"
     plt.savefig(out_path, dpi=300, bbox_inches="tight", facecolor="white")
     plt.close()
