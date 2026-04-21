@@ -131,6 +131,20 @@ def find_volume(sample_dir: Path) -> np.ndarray | None:
             threshold = 0.5 * (gray.max() + gray.min())
             return gray > threshold
 
+    # ---- try multi-page TIFF mask ---------------------------------------
+    for name in ("mask.tif", "mask.tiff"):
+        p = sample_dir / name
+        if p.exists():
+            img = Image.open(p)
+            slices = []
+            for i in range(img.n_frames):
+                img.seek(i)
+                slices.append(np.array(img))
+            vol = np.stack(slices, axis=0)
+            if vol.dtype != bool:
+                vol = vol > 0
+            return vol
+
     # ---- try a stack of slice images ------------------------------------
     slice_files = sorted(sample_dir.glob("slice_*.png"))
     if not slice_files:
