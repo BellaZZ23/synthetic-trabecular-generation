@@ -341,7 +341,7 @@ def build_figure(
     )
 
     outpath.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(outpath, dpi=300, bbox_inches="tight")
+    plt.savefig(outpath, dpi=300)
     plt.close(fig)
     print(f"\nSaved figure to: {outpath.resolve()}")
 
