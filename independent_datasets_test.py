@@ -2,7 +2,7 @@
 """
 independent_datasets_test.py — v2
 
-Generates N independent synthetic datasets using full_pipeline.py,
+Generates N independent synthetic datasets using full_pipeline_v2.py,
 computes quantum kernels for each, runs single train/test splits,
 and performs a standard paired t-test on truly independent pairs.
 
@@ -10,14 +10,14 @@ Each dataset uses a different --seed, producing entirely separate
 synthetic volumes, feature extractions, and dim reductions.
 
 Usage:
-  python independent_datasets_test.py ^
-      --reference-image data\real\reference.png ^
-      --voi-dirs data\derived\VOI1 data\derived\VOI4 ^
-      --params-json output\v8_dataset\optimization_result.json ^
-      --n-datasets 10 ^
-      --methods umap ^
-      --task classify-bvtv ^
-      --outdir output\independent_test
+  python independent_datasets_test.py
+      --reference-image data/real/reference.png
+      --voi-dirs data/derived/VOI1 data/derived/VOI4
+      --params-json output/v8_dataset/optimization_result.json
+      --n-datasets 10
+      --methods umap
+      --task classify-bvtv
+      --outdir output/independent_test
 
 Runtime: ~2 hrs/dataset/method for kernel. UMAP only = ~20 hrs total.
 """
@@ -61,7 +61,7 @@ def run_full_pipeline(reference_image, voi_dirs, params_json,
                       outdir, num_samples, seed, xy=128, z=40):
     """Call full_pipeline.py to generate one independent dataset."""
     cmd = [
-        sys.executable, "full_pipeline.py",
+        sys.executable, "full_pipeline_v2.py",
         "--reference-image", str(reference_image),
         "--params-json", str(params_json),
         "--outdir", str(outdir),
@@ -74,7 +74,7 @@ def run_full_pipeline(reference_image, voi_dirs, params_json,
     if voi_dirs:
         cmd += ["--voi-dirs"] + [str(v) for v in voi_dirs]
 
-    print(f"    Running full_pipeline.py (seed={seed})...")
+    print(f"    Running full_pipeline_v2.py (seed={seed})...")
     t0 = time.time()
     result = subprocess.run(cmd)
     elapsed = time.time() - t0
@@ -190,7 +190,7 @@ def main():
     print(f"  {args.n_datasets} datasets x {args.num_samples} samples each")
     print(f"  Methods: {args.methods}")
     print(f"  Task: {args.task}")
-    print(f"  Calls full_pipeline.py with --skip-optimize")
+    print(f"  Calls full_pipeline_v2.py with --skip-optimize")
     print("=" * 70)
 
     if not HAS_QISKIT:
