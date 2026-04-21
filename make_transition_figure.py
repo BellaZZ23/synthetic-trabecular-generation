@@ -163,8 +163,9 @@ def render_volume(
     mask: np.ndarray,
     voxel_size_um: float = 39.0,
     step_size: int = 2,
-    elev: float = 25,
-    azim: float = -60,
+    elev: float = 30,
+    azim: float = -55,
+    z_scale: float = 2.5,
 ) -> None:
     """
     Render a 3-D isosurface of the binary bone mask into *ax*.
@@ -173,47 +174,78 @@ def render_volume(
     ----------
     ax : mpl_toolkits.mplot3d.axes3d.Axes3D
     mask : (Z, H, W) boolean array
-    voxel_size_um : physical voxel size in µm (for axis labels)
+    voxel_size_um : physical voxel size in µm
     step_size : marching-cubes step (increase for speed, decrease for detail)
     elev, azim : camera angles
+    z_scale : multiplicative stretch for the z-axis to avoid pancake look
     """
-    verts, faces, _, _ = marching_cubes(
+    verts, faces, normals, _ = marching_cubes(
         mask.astype(float),
         level=0.5,
         step_size=step_size,
         allow_degenerate=False,
     )
 
-    # Scale vertices to physical units (µm → mm for readability)
+    # Scale vertices to physical units (µm → mm)
     verts_mm = verts * voxel_size_um / 1000.0
+
+    # Stretch z-axis so the thin slab (40 slices) doesn't look flat
+    verts_mm[:, 0] *= z_scale
+
+    # ── Simple directional shading from face normals ──────────────
+    light_dir = np.array([0.3, 0.5, 1.0])
+    light_dir /= np.linalg.norm(light_dir)
+
+    # Per-face normal = average of vertex normals
+    face_normals = normals[faces].mean(axis=1)
+    norms = np.linalg.norm(face_normals, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    face_normals /= norms
+
+    shade = np.abs(face_normals @ light_dir)  # 0..1
+    shade = 0.35 + 0.65 * shade               # ambient + diffuse
+
+    # Bone-white base colour, modulated by shade
+    base = np.array([0.92, 0.89, 0.83])
+    face_colors = np.outer(shade, base)
+    face_colors = np.clip(face_colors, 0, 1)
+    # Add alpha column
+    face_colors = np.column_stack([face_colors, np.full(len(shade), 0.85)])
 
     mesh = Poly3DCollection(
         verts_mm[faces],
-        alpha=0.70,
-        edgecolor=(0.15, 0.15, 0.15, 0.05),
-        linewidth=0.1,
+        linewidths=0,           # no edge lines
+        antialiased=False,      # faster, cleaner at high poly count
     )
-    mesh.set_facecolor((0.85, 0.82, 0.75))  # warm bone colour
+    mesh.set_facecolor(face_colors)
 
     ax.add_collection3d(mesh)
 
-    # Set axis limits from the mesh extents
+    # Set axis limits
     for setter, idx in [(ax.set_xlim, 0), (ax.set_ylim, 1), (ax.set_zlim, 2)]:
         setter(verts_mm[:, idx].min(), verts_mm[:, idx].max())
 
     ax.view_init(elev=elev, azim=azim)
-    ax.set_xlabel("x (mm)", fontsize=7, labelpad=1)
-    ax.set_ylabel("y (mm)", fontsize=7, labelpad=1)
-    ax.set_zlabel("z (mm)", fontsize=7, labelpad=1)
-    ax.tick_params(labelsize=5, pad=0)
 
-    # Lighten the pane backgrounds
+    # ── Clean axes: no labels, no ticks, no panes, no grid ────────
+    ax.set_xticklabels([])
+    ax.set_yticklabels([])
+    ax.set_zticklabels([])
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_zticks([])
+    ax.set_xlabel("")
+    ax.set_ylabel("")
+    ax.set_zlabel("")
     ax.xaxis.pane.fill = False
     ax.yaxis.pane.fill = False
     ax.zaxis.pane.fill = False
-    ax.xaxis.pane.set_edgecolor("w")
-    ax.yaxis.pane.set_edgecolor("w")
-    ax.zaxis.pane.set_edgecolor("w")
+    ax.xaxis.pane.set_edgecolor("none")
+    ax.yaxis.pane.set_edgecolor("none")
+    ax.zaxis.pane.set_edgecolor("none")
+    ax.xaxis.line.set_visible(False)
+    ax.yaxis.line.set_visible(False)
+    ax.zaxis.line.set_visible(False)
     ax.grid(False)
 
 
@@ -250,7 +282,7 @@ def build_figure(
         volumes = [None] * n
 
     nrows = 2 if has_volumes else 1
-    fig = plt.figure(figsize=(12, 3.6 * nrows + 0.8))
+    fig = plt.figure(figsize=(12, 3.2 * nrows + 0.6))
 
     # ── Row 1: 2-D mid-slices ─────────────────────────────────────────
     for i, (img_path, panel_label, target_bvtv, measured_bvtv, _) in enumerate(
@@ -270,9 +302,6 @@ def build_figure(
 
     # ── Row 2: 3-D volumetric views ───────────────────────────────────
     if has_volumes:
-        # Generate corresponding panel labels for the volumetric row
-        # e.g. if row 1 has B–E (with A being real bone), row 2 = F–I
-        # Here we simply label them with the same letter + subscript '3D'
         for i, (_, panel_label, target_bvtv, _, sample_dir) in enumerate(
             image_info
         ):
@@ -292,22 +321,20 @@ def build_figure(
                     fontsize=9,
                     color="gray",
                 )
-            ax3d.set_title(
-                f"{panel_label}\u2083\u1d30",  # subscript-style label
-                fontsize=10,
-                pad=2,
-            )
+            # Sequential label: A→E, B→F, C→G, D→H
+            vol_label = chr(ord(panel_label) + n)
+            ax3d.set_title(vol_label, fontsize=11, pad=-2)
 
-    plt.subplots_adjust(wspace=0.10, hspace=0.25, bottom=0.13)
+    plt.subplots_adjust(wspace=0.02, hspace=0.12, bottom=0.10)
 
     # ── Caption text at the bottom ────────────────────────────────────
     fig.text(
         0.5,
-        0.02,
+        0.01,
         "Synthetic trabecular bone generated with increasing target BV/TV "
-        "(0.30\u20130.48) at 39 \u03bcm voxel resolution.\n"
-        "Top row: representative grayscale mid-slices. "
-        "Bottom row: 3-D isosurface renderings of the corresponding volumes.",
+        "(0.30\u20130.48) at 39 \u03bcm isotropic voxel resolution.\n"
+        "(A\u2013D) Grayscale mid-slice cross-sections. "
+        "(E\u2013H) Three-dimensional isosurface renderings of the corresponding volumes.",
         ha="center",
         fontsize=9,
         style="italic",
