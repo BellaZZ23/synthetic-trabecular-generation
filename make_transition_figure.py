@@ -158,27 +158,23 @@ def find_volume(sample_dir: Path) -> np.ndarray | None:
     return None
 
 
-def render_volume(
-    ax,
+def render_volume_to_image(
     mask: np.ndarray,
     voxel_size_um: float = 39.0,
     step_size: int = 2,
     elev: float = 30,
     azim: float = -55,
     z_scale: float = 2.5,
-) -> None:
+    img_size: tuple[int, int] = (400, 400),
+) -> np.ndarray:
     """
-    Render a 3-D isosurface of the binary bone mask into *ax*.
+    Render a 3-D isosurface of the binary bone mask and return as an RGBA image.
 
-    Parameters
-    ----------
-    ax : mpl_toolkits.mplot3d.axes3d.Axes3D
-    mask : (Z, H, W) boolean array
-    voxel_size_um : physical voxel size in µm
-    step_size : marching-cubes step (increase for speed, decrease for detail)
-    elev, azim : camera angles
-    z_scale : multiplicative stretch for the z-axis to avoid pancake look
+    Renders to an off-screen figure, reads back as a numpy array, and closes
+    the figure — avoids matplotlib 3-D bbox bugs in the final composite.
     """
+    import io
+
     verts, faces, normals, _ = marching_cubes(
         mask.astype(float),
         level=0.5,
@@ -188,65 +184,56 @@ def render_volume(
 
     # Scale vertices to physical units (µm → mm)
     verts_mm = verts * voxel_size_um / 1000.0
-
-    # Stretch z-axis so the thin slab (40 slices) doesn't look flat
+    # Stretch z so the thin slab doesn't look flat
     verts_mm[:, 0] *= z_scale
 
-    # ── Simple directional shading from face normals ──────────────
+    # ── Directional shading ───────────────────────────────────────
     light_dir = np.array([0.3, 0.5, 1.0])
     light_dir /= np.linalg.norm(light_dir)
 
-    # Per-face normal = average of vertex normals
     face_normals = normals[faces].mean(axis=1)
     norms = np.linalg.norm(face_normals, axis=1, keepdims=True)
     norms[norms == 0] = 1.0
     face_normals /= norms
 
-    shade = np.abs(face_normals @ light_dir)  # 0..1
-    shade = 0.35 + 0.65 * shade               # ambient + diffuse
+    shade = np.abs(face_normals @ light_dir)
+    shade = 0.35 + 0.65 * shade
 
-    # Bone-white base colour, modulated by shade
     base = np.array([0.92, 0.89, 0.83])
     face_colors = np.outer(shade, base)
     face_colors = np.clip(face_colors, 0, 1)
-    # Add alpha column
     face_colors = np.column_stack([face_colors, np.full(len(shade), 0.85)])
 
     mesh = Poly3DCollection(
         verts_mm[faces],
-        linewidths=0,           # no edge lines
-        antialiased=False,      # faster, cleaner at high poly count
+        linewidths=0,
+        antialiased=False,
     )
     mesh.set_facecolor(face_colors)
 
-    ax.add_collection3d(mesh)
+    # ── Render to off-screen figure ───────────────────────────────
+    dpi = 100
+    w_in = img_size[0] / dpi
+    h_in = img_size[1] / dpi
+    tmp_fig = plt.figure(figsize=(w_in, h_in), dpi=dpi)
+    ax = tmp_fig.add_subplot(111, projection="3d")
 
-    # Set axis limits
+    ax.add_collection3d(mesh)
     for setter, idx in [(ax.set_xlim, 0), (ax.set_ylim, 1), (ax.set_zlim, 2)]:
         setter(verts_mm[:, idx].min(), verts_mm[:, idx].max())
-
     ax.view_init(elev=elev, azim=azim)
+    ax.axis("off")
 
-    # ── Clean axes: no labels, no ticks, no panes, no grid ────────
-    ax.tick_params(
-        axis="both", which="both",
-        labelbottom=False, labelleft=False,
-        bottom=False, left=False, right=False, top=False,
-        labelsize=0, length=0,
-    )
-    ax.set_xlabel("")
-    ax.set_ylabel("")
-    ax.set_zlabel("")
-    ax.xaxis.pane.fill = False
-    ax.yaxis.pane.fill = False
-    ax.zaxis.pane.fill = False
-    ax.xaxis.pane.set_edgecolor("none")
-    ax.yaxis.pane.set_edgecolor("none")
-    ax.zaxis.pane.set_edgecolor("none")
-    ax.xaxis.line.set_visible(False)
-    ax.yaxis.line.set_visible(False)
-    ax.zaxis.line.set_visible(False)
-    ax.grid(False)
+    tmp_fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+
+    buf = io.BytesIO()
+    tmp_fig.savefig(buf, format="png", dpi=dpi, transparent=True)
+    plt.close(tmp_fig)
+
+    buf.seek(0)
+    img = np.array(Image.open(buf).convert("RGBA"))
+    buf.close()
+    return img
 
 
 # ─────────────────────────────────────────────
@@ -300,30 +287,28 @@ def build_figure(
         ax.set_title(title, fontsize=11)
         ax.axis("off")
 
-    # ── Row 2: 3-D volumetric views ───────────────────────────────────
+    # ── Row 2: 3-D volumetric views (rendered to images) ────────────
     if has_volumes:
         for i, (_, panel_label, target_bvtv, _, sample_dir) in enumerate(
             image_info
         ):
-            ax3d = fig.add_subplot(nrows, n, n + i + 1, projection="3d")
+            ax = fig.add_subplot(nrows, n, n + i + 1)
 
             vol = volumes[i]
             if vol is not None:
-                render_volume(ax3d, vol)
+                vol_img = render_volume_to_image(vol)
+                ax.imshow(vol_img)
             else:
-                ax3d.text2D(
-                    0.5,
-                    0.5,
-                    "volume\nnot found",
-                    transform=ax3d.transAxes,
-                    ha="center",
-                    va="center",
-                    fontsize=9,
-                    color="gray",
+                ax.text(
+                    0.5, 0.5, "volume\nnot found",
+                    transform=ax.transAxes,
+                    ha="center", va="center",
+                    fontsize=9, color="gray",
                 )
             # Sequential label: A→E, B→F, C→G, D→H
             vol_label = chr(ord(panel_label) + n)
-            ax3d.set_title(vol_label, fontsize=11, pad=-2)
+            ax.set_title(vol_label, fontsize=11)
+            ax.axis("off")
 
     plt.subplots_adjust(wspace=0.02, hspace=0.12, bottom=0.10)
 
@@ -341,7 +326,7 @@ def build_figure(
     )
 
     outpath.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(outpath, dpi=300)
+    plt.savefig(outpath, dpi=300, bbox_inches="tight")
     plt.close(fig)
     print(f"\nSaved figure to: {outpath.resolve()}")
 
