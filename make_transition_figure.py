@@ -164,7 +164,7 @@ def render_volume_to_image(
     step_size: int = 2,
     elev: float = 30,
     azim: float = -55,
-    z_scale: float = 2.5,
+    z_scale: float = 2.0,
     img_size: tuple[int, int] = (400, 400),
 ) -> np.ndarray:
     """
@@ -227,11 +227,11 @@ def render_volume_to_image(
     tmp_fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
 
     buf = io.BytesIO()
-    tmp_fig.savefig(buf, format="png", dpi=dpi, transparent=True)
+    tmp_fig.savefig(buf, format="png", dpi=dpi, transparent=False, facecolor="white")
     plt.close(tmp_fig)
 
     buf.seek(0)
-    img = np.array(Image.open(buf).convert("RGBA"))
+    img = np.array(Image.open(buf).convert("RGB"))
     buf.close()
     return img
 
