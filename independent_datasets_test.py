@@ -141,11 +141,7 @@ def plot_paired(all_results, outdir):
         ax.plot([0, 1], [c.mean(), q.mean()], "k-", lw=2.5, zorder=6,
                 marker="D", markersize=8)
 
-        p = r.get("p_value", 1.0)
-        sig = "***" if p < 0.001 else "**" if p < 0.01 else \
-              "*" if p < 0.05 else "n.s."
-        ax.set_title(f"{METHOD_LABELS.get(method, method)}\n"
-                     f"p={p:.4f} ({sig})", fontsize=11, fontweight="bold")
+        ax.set_title("", fontsize=11)
         ax.set_xticks([0, 1])
         ax.set_xticklabels(["Classical\n(RBF)", "Quantum\n(ZZ)"], fontsize=9)
         ax.axhline(0.5, color="gray", ls="--", alpha=0.4)
@@ -154,8 +150,6 @@ def plot_paired(all_results, outdir):
 
     axes[0].set_ylabel("Accuracy", fontsize=11)
     axes[0].legend(fontsize=8, loc="lower left")
-    fig.suptitle("Independent Datasets — Paired Comparison",
-                 fontsize=13, fontweight="bold", y=1.02)
     plt.tight_layout()
     out_path = outdir / "independent_paired_comparison.png"
     plt.savefig(out_path, dpi=300, bbox_inches="tight", facecolor="white")
