@@ -310,20 +310,7 @@ def build_figure(
             ax.set_title(vol_label, fontsize=11)
             ax.axis("off")
 
-    plt.subplots_adjust(wspace=0.02, hspace=0.12, bottom=0.10)
-
-    # ── Caption text at the bottom ────────────────────────────────────
-    fig.text(
-        0.5,
-        0.01,
-        "Synthetic trabecular bone generated with increasing target BV/TV "
-        "(0.30\u20130.48) at 39 \u03bcm isotropic voxel resolution.\n"
-        "(A\u2013D) Grayscale mid-slice cross-sections. "
-        "(E\u2013H) Three-dimensional isosurface renderings of the corresponding volumes.",
-        ha="center",
-        fontsize=9,
-        style="italic",
-    )
+    plt.subplots_adjust(wspace=0.02, hspace=0.12, bottom=0.02)
 
     outpath.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(outpath, dpi=300, bbox_inches="tight")
