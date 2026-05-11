@@ -50,10 +50,10 @@ from synthetic_trabecular_v15_morphometric_control import (
 # ══════════════════════════════════════════════════════════════
 
 def generate_bone_volume(
-    nx: int = 32,
-    ny: int = 32,
-    nz: int = 16,
-    target_bvtv: float = 0.30,
+    nx: int = 128,
+    ny: int = 128,
+    nz: int = 40,
+    target_bvtv: float = 0.33,
     voxel_um: float = 39.0,
     base_sigma: float = 2.5,
     warp_amp: float = 1.2,
@@ -61,7 +61,7 @@ def generate_bone_volume(
     plate_weight: float = 0.7,
     close_iters: int = 3,
     min_component: int = 400,
-    seed: int = 42,
+    seed: int = 100,
     verbose: bool = True,
 ) -> dict:
     """
@@ -132,15 +132,16 @@ def generate_bone_volume(
 # GRAYSCALE WRAPPER
 # ══════════════════════════════════════════════════════════════
 
-def generate_grayscale(bone_mask, seed=42, bone_mean=90.0, marrow_mean=15.0):
+def generate_grayscale(bone_mask, seed=100, bone_mean=90.0, marrow_mean=15.0,
+                       solid_fill_sigma=0.8, noise_sd=2.0, bg_tex_sd=0.5):
     """Generate synthetic micro-CT grayscale from a bone mask."""
     rng = np.random.default_rng(seed)
     gp = GrayParams(
         bone_mean=bone_mean,
         marrow_mean=marrow_mean,
-        solid_fill_sigma=0.8,
-        noise_sd=3.0,
-        bg_tex_sd=1.0,
+        solid_fill_sigma=solid_fill_sigma,
+        noise_sd=noise_sd,
+        bg_tex_sd=bg_tex_sd,
     )
     return microct_gray_solid(bone_mask, gp, rng, br=2.0)
 
