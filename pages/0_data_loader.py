@@ -195,7 +195,10 @@ if volume is not None:
         st.write("Measure the real volume and use its morphometrics as generator targets.")
 
         mid_z = nz // 2
-        slice_idx = st.slider("Preview Z-slice", 0, nz - 1, mid_z, key="extract_slice")
+        if nz > 1:
+            slice_idx = st.slider("Preview Z-slice", 0, nz - 1, mid_z, key="extract_slice")
+        else:
+            slice_idx = 0
         voxel_mm = voxel_um / 1000.0
 
         col_raw, col_bin = st.columns(2)
@@ -354,7 +357,10 @@ if volume is not None:
 
             # Use the smaller volume's z-range for the slider
             max_z = min(nz, nz_s) - 1
-            comp_slice = st.slider("Z-slice", 0, max_z, max_z // 2, key="val_slice")
+            if max_z > 0:
+                comp_slice = st.slider("Z-slice", 0, max_z, max_z // 2, key="val_slice")
+            else:
+                comp_slice = 0
 
             voxel_mm_r = voxel_um / 1000.0
             voxel_mm_s = syn_vol["voxel_um"] / 1000.0
