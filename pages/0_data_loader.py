@@ -284,12 +284,7 @@ if volume is not None:
                         "ny": ny,
                         "nz": nz,
                     }
-                    st.success(
-                        f"Stored targets: BV/TV={morph['BVTV']:.3f}, "
-                        f"Tb.Th={morph['TbTh_um_p50']:.0f} µm, "
-                        f"volume={nx}×{ny}×{nz}. "
-                        f"Go to **Bone Generator** to generate a matched volume."
-                    )
+                    st.switch_page("pages/1_generator.py")
 
     # ─────────────────────────────────────────────────────────
     # TAB 2 — Validation
