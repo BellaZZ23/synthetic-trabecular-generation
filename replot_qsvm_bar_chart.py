@@ -150,10 +150,6 @@ def plot_from_json(results_json: Path, results_dir: Path, outfile: Path, dpi: in
         p_val = compute_wilcoxon_p(results_dir, method, alternative="two-sided")
         sig_text = p_to_sig(p_val)
 
-        # Skip non-significant ones if you want a cleaner figure:
-        # if sig_text == "ns":
-        #     continue
-
         pair_top = max(c_acc[i] + c_std[i], q_acc[i] + q_std[i])
         y = pair_top + bracket_gap
 
@@ -179,15 +175,7 @@ def plot_from_json(results_json: Path, results_dir: Path, outfile: Path, dpi: in
     ymax_needed = max(top_candidates) if top_candidates else 1.0
     ax.set_ylim(0, min(1.15, ymax_needed + 0.03))
 
-    task = payload.get("task", "classification")
-    title_task = {
-        "classify-bvtv": "BV/TV Classification",
-        "classify-tbn": "Tb.N Classification",
-        "classify-tbsp": "Tb.Sp Classification",
-    }.get(task, task)
-
     ax.set_ylabel("Accuracy")
-    ax.set_title(f"Classical vs Quantum SVM — {title_task}", pad=14)
     ax.set_xticks(x)
     ax.set_xticklabels(method_labels, rotation=15, ha="right")
     ax.axhline(0.5, color="gray", ls="--", alpha=0.5, label="Random baseline")

@@ -1,0 +1,186 @@
+{
+  "pipeline_version": "2.3",
+  "fixes_applied": [
+    "fix1_joint_sampling",
+    "fix2_honest_lcc",
+    "fix3_antifloor",
+    "fix4_tbsp_sigma",
+    "fix13_texture_features",
+    "fix14_plate_mode"
+  ],
+  "generator_version": "v15",
+  "timestamp": "2026-04-22T21:03:53.712931",
+  "validation_gate": {
+    "validates_on": "raw_morphology_before_keep_largest_component",
+    "bvtv_rel_err_max": 0.08,
+    "lcc_min": 0.95,
+    "tbth_floor_um": 0.0,
+    "tbsp_sigma_scale": 0.004
+  },
+  "joint_sampler": {
+    "used": true,
+    "n_sources": 18
+  },
+  "generation": {
+    "num_samples_requested": 500,
+    "num_samples_saved": 500,
+    "shape": [
+      40,
+      128,
+      128
+    ],
+    "voxel_um": 39.0,
+    "plate_mode": true
+  },
+  "dimensionality_reduction": {
+    "features_dir": "output\\independent_test_v2\\dataset_09\\features",
+    "feature_type": "texture",
+    "scaler": "robust",
+    "results": {
+      "PCA": {
+        "n_components": 16,
+        "variance_explained": 0.9948676228523254,
+        "dist_preservation": null,
+        "downstream_metrics": {
+          "per_label": {
+            "BVTV": {
+              "r2": 0.7375699281692505,
+              "mae": 0.011789503507316113
+            },
+            "TbTh_um_p50": {
+              "r2": 0.9290486574172974,
+              "mae": 6.362226486206055
+            },
+            "TbN_per_mm": {
+              "r2": 0.9318294525146484,
+              "mae": 0.09367117285728455
+            },
+            "TbSp_um_p50": {
+              "r2": 0.9324965476989746,
+              "mae": 13.969069480895996
+            }
+          },
+          "mean_r2": 0.8827361464500427,
+          "mean_mae": 5.109189160866663
+        }
+      },
+      "RP_gaussian": {
+        "n_components": 16,
+        "variance_explained": null,
+        "dist_preservation": 0.8914248943328857,
+        "downstream_metrics": {
+          "per_label": {
+            "BVTV": {
+              "r2": 0.7132839560508728,
+              "mae": 0.01253236923366785
+            },
+            "TbTh_um_p50": {
+              "r2": 0.9247714281082153,
+              "mae": 6.723613739013672
+            },
+            "TbN_per_mm": {
+              "r2": 0.9321999549865723,
+              "mae": 0.09441474080085754
+            },
+            "TbSp_um_p50": {
+              "r2": 0.930335521697998,
+              "mae": 13.632904052734375
+            }
+          },
+          "mean_r2": 0.8751477152109146,
+          "mean_mae": 5.115866225445643
+        }
+      },
+      "RP_sparse": {
+        "n_components": 16,
+        "variance_explained": null,
+        "dist_preservation": 1.22185218334198,
+        "downstream_metrics": {
+          "per_label": {
+            "BVTV": {
+              "r2": 0.7173210382461548,
+              "mae": 0.012418202124536037
+            },
+            "TbTh_um_p50": {
+              "r2": 0.9260309934616089,
+              "mae": 6.4037981033325195
+            },
+            "TbN_per_mm": {
+              "r2": 0.9245204925537109,
+              "mae": 0.10155179351568222
+            },
+            "TbSp_um_p50": {
+              "r2": 0.9290749430656433,
+              "mae": 14.648733139038086
+            }
+          },
+          "mean_r2": 0.8742368668317795,
+          "mean_mae": 5.291625309502706
+        }
+      },
+      "UMAP": {
+        "n_components": 16,
+        "variance_explained": null,
+        "dist_preservation": null,
+        "downstream_metrics": {
+          "per_label": {
+            "BVTV": {
+              "r2": 0.6657386422157288,
+              "mae": 0.011953821405768394
+            },
+            "TbTh_um_p50": {
+              "r2": 0.9163538217544556,
+              "mae": 6.650366306304932
+            },
+            "TbN_per_mm": {
+              "r2": 0.8770310878753662,
+              "mae": 0.12575587630271912
+            },
+            "TbSp_um_p50": {
+              "r2": 0.9050440192222595,
+              "mae": 16.52165412902832
+            }
+          },
+          "mean_r2": 0.8410418927669525,
+          "mean_mae": 5.827432533260435
+        }
+      },
+      "PLS": {
+        "n_components": 4,
+        "variance_explained": null,
+        "dist_preservation": null,
+        "downstream_metrics": {
+          "per_label": {
+            "BVTV": {
+              "r2": 0.6986053450913552,
+              "mae": 0.012885178456758748
+            },
+            "TbTh_um_p50": {
+              "r2": 0.9250891581324571,
+              "mae": 6.404174520414291
+            },
+            "TbN_per_mm": {
+              "r2": 0.9179694209860282,
+              "mae": 0.10422050988235998
+            },
+            "TbSp_um_p50": {
+              "r2": 0.9224327361442665,
+              "mae": 15.15204265862653
+            }
+          },
+          "mean_r2": 0.8660241650885268,
+          "mean_mae": 5.418330716844985
+        }
+      }
+    },
+    "quantum_files": {
+      "PCA": "output\\independent_test_v2\\dataset_09\\features\\pca_quantum_ready.npz",
+      "RP_gaussian": "output\\independent_test_v2\\dataset_09\\features\\rp_gaussian_quantum_ready.npz",
+      "RP_sparse": "output\\independent_test_v2\\dataset_09\\features\\rp_sparse_quantum_ready.npz",
+      "UMAP": "output\\independent_test_v2\\dataset_09\\features\\umap_quantum_ready.npz",
+      "PLS": "output\\independent_test_v2\\dataset_09\\features\\pls_quantum_ready.npz"
+    },
+    "n_train": 400,
+    "n_test": 100
+  }
+}

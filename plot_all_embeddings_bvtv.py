@@ -66,8 +66,7 @@ def main():
 
     n = len(available)
 
-    # Slightly taller figure gives titles more breathing room
-    fig = plt.figure(figsize=(3.2 * n + 0.8, 4.2))
+    fig = plt.figure(figsize=(3.2 * n + 0.8, 3.8))
     gs = GridSpec(
         1, n + 1, figure=fig,
         width_ratios=[1] * n + [0.05],
@@ -102,14 +101,6 @@ def main():
     cbar = fig.colorbar(sc, cax=cax)
     cbar.set_label("BV/TV", fontsize=9)
     cbar.ax.tick_params(labelsize=7)
-
-    # Reserve space at top so suptitle does not overlap subplot titles
-    fig.subplots_adjust(top=0.80)
-
-    fig.suptitle(
-        "Dimensionality Reduction — 2D Embeddings Coloured by BV/TV",
-        fontsize=12, fontweight="bold", y=0.96,
-    )
 
     outfile.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(outfile, dpi=args.dpi, bbox_inches="tight", facecolor="white")

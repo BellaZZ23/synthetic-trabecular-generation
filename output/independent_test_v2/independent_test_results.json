@@ -2,7 +2,7 @@
   "task": "classify-bvtv",
   "n_datasets": 10,
   "num_samples": 500,
-  "total_hours": 27.74116200566292,
+  "total_hours": 0.00021647459930843778,
   "results": {
     "umap": {
       "classical_accs": [
