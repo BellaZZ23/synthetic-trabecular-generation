@@ -17,10 +17,26 @@ st.set_page_config(page_title="Bone generator", page_icon="🦴", layout="wide")
 st.title("Bone volume generator")
 st.caption("v15.3 zero-crossing Gaussian random field — published honeycomb defaults")
 
+# ── Check for targets pushed from Data Loader ──
+real_targets = st.session_state.get("target_from_real", None)
+if real_targets:
+    st.info(
+        f"📐 Targets loaded from real data: BV/TV={real_targets['bvtv']:.3f}, "
+        f"Tb.Th={real_targets['tbth_um']:.0f} µm, "
+        f"volume={real_targets['nx']}×{real_targets['ny']}×{real_targets['nz']}"
+    )
+    default_bvtv = real_targets["bvtv"]
+    default_tbth = int(real_targets["tbth_um"])
+    default_voxel = real_targets["voxel_um"]
+else:
+    default_bvtv = 0.33
+    default_tbth = 180
+    default_voxel = 39.0
+
 # ── Sidebar: Morphometric targets ──
 st.sidebar.header("Morphometric targets")
-target_bvtv = st.sidebar.slider("Target BV/TV", 0.05, 0.50, 0.33, 0.01)
-tbth_um = st.sidebar.slider("Target Tb.Th (um)", 80, 300, 180, 5)
+target_bvtv = st.sidebar.slider("Target BV/TV", 0.05, 0.50, default_bvtv, 0.01)
+tbth_um = st.sidebar.slider("Target Tb.Th (um)", 80, 300, default_tbth, 5)
 
 # ── Sidebar: Volume geometry ──
 st.sidebar.header("Volume geometry")
@@ -29,7 +45,7 @@ with gcol1:
     nx = st.selectbox("XY size (voxels)", [32, 48, 64, 96, 128], index=4)
 with gcol2:
     nz = st.selectbox("Z slices", [16, 24, 32, 40, 60], index=3)
-voxel_um = st.sidebar.number_input("Voxel size (um)", value=39.0, step=1.0)
+voxel_um = st.sidebar.number_input("Voxel size (um)", value=default_voxel, step=1.0)
 
 # ── Sidebar: Field parameters ──
 st.sidebar.header("Field parameters")

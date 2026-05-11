@@ -25,6 +25,10 @@ via micro-FE coupling.
 
 ### Pages
 
+- **Data loader** — load real micro-CT volumes to extract morphometric
+  parameters for synthetic generation, or to validate synthetic volumes
+  against real data side-by-side
+
 - **Bone generator** — generate synthetic trabecular bone volumes with
   controllable morphometric parameters (BV/TV, Tb.Th, plate/rod weight)
 
