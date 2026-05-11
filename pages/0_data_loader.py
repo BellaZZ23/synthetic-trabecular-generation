@@ -103,7 +103,9 @@ def binarise(volume, threshold):
 
 
 def run_batch_generation(targets, n_samples, base_sigma, close_iters, base_seed,
-                         calibrate_tbth, progress_bar=None):
+                         calibrate_tbth, bone_mean=90.0, marrow_mean=15.0,
+                         solid_fill_sigma=0.8, noise_sd=2.0, bg_tex_sd=0.5,
+                         progress_bar=None):
     """Generate multiple synthetic volumes from a set of targets.
 
     Returns list of dicts, each with 'volume', 'grayscale', 'seed'.
@@ -137,7 +139,12 @@ def run_batch_generation(targets, n_samples, base_sigma, close_iters, base_seed,
                 seed=seed, verbose=False,
             )
 
-        gray = generate_grayscale(vol["bone_mask"], seed=seed)
+        gray = generate_grayscale(
+            vol["bone_mask"], seed=seed,
+            bone_mean=bone_mean, marrow_mean=marrow_mean,
+            solid_fill_sigma=solid_fill_sigma,
+            noise_sd=noise_sd, bg_tex_sd=bg_tex_sd,
+        )
         samples.append({"volume": vol, "grayscale": gray, "seed": seed})
 
     if progress_bar:
@@ -308,6 +315,16 @@ if input_mode == "Enter metrics manually":
         man_calibrate = st.checkbox("Calibrate Tb.Th", value=True, key="man_cal",
             help="Iteratively adjust base_sigma to match Tb.Th target.")
 
+    with st.expander("Grayscale synthesis"):
+        grcol1, grcol2 = st.columns(2)
+        with grcol1:
+            man_bone_mean = st.slider("Bone mean intensity", 50, 200, 90, 5, key="man_bmean")
+            man_marrow_mean = st.slider("Marrow mean intensity", 5, 50, 15, 1, key="man_mmean")
+            man_fill_sigma = st.slider("Solid fill sigma", 0.2, 2.0, 0.8, 0.1, key="man_fsig")
+        with grcol2:
+            man_noise_sd = st.slider("Noise SD", 0.0, 10.0, 2.0, 0.5, key="man_nsd")
+            man_bg_tex = st.slider("Background texture SD", 0.0, 5.0, 0.5, 0.1, key="man_btex")
+
     if st.button(f"Generate {man_n_samples} sample(s)", type="primary",
                  use_container_width=True, key="btn_gen_manual"):
         targets = {
@@ -324,6 +341,9 @@ if input_mode == "Enter metrics manually":
             base_sigma=man_sigma, close_iters=man_close,
             base_seed=int(man_base_seed),
             calibrate_tbth=man_calibrate,
+            bone_mean=man_bone_mean, marrow_mean=man_marrow_mean,
+            solid_fill_sigma=man_fill_sigma,
+            noise_sd=man_noise_sd, bg_tex_sd=man_bg_tex,
             progress_bar=progress,
         )
         st.session_state["generated_samples"] = samples
@@ -495,6 +515,16 @@ if volume is not None:
                     up_calibrate = st.checkbox("Calibrate Tb.Th", value=True, key="up_cal",
                         help="Iteratively adjust base_sigma to match measured Tb.Th.")
 
+                with st.expander("Grayscale synthesis"):
+                    grcol1, grcol2 = st.columns(2)
+                    with grcol1:
+                        up_bone_mean = st.slider("Bone mean intensity", 50, 200, 90, 5, key="up_bmean")
+                        up_marrow_mean = st.slider("Marrow mean intensity", 5, 50, 15, 1, key="up_mmean")
+                        up_fill_sigma = st.slider("Solid fill sigma", 0.2, 2.0, 0.8, 0.1, key="up_fsig")
+                    with grcol2:
+                        up_noise_sd = st.slider("Noise SD", 0.0, 10.0, 2.0, 0.5, key="up_nsd")
+                        up_bg_tex = st.slider("Background texture SD", 0.0, 5.0, 0.5, 0.1, key="up_btex")
+
                 if st.button(f"Generate {up_n_samples} sample(s)", type="primary",
                              use_container_width=True, key="btn_gen_upload"):
                     targets = {
@@ -511,6 +541,9 @@ if volume is not None:
                         base_sigma=up_sigma, close_iters=up_close,
                         base_seed=int(up_base_seed),
                         calibrate_tbth=up_calibrate,
+                        bone_mean=up_bone_mean, marrow_mean=up_marrow_mean,
+                        solid_fill_sigma=up_fill_sigma,
+                        noise_sd=up_noise_sd, bg_tex_sd=up_bg_tex,
                         progress_bar=progress,
                     )
                     st.session_state["generated_samples"] = samples
@@ -554,9 +587,9 @@ if volume is not None:
                 ("Tb.N", "TbN_per_mm", ".2f", " /mm"),
                 ("Tb.Sp p50", "TbSp_um_p50", ".0f", " µm"),
                 ("Tb.Sp p90", "TbSp_um_p90", ".0f", " µm"),
-                ("Euler", "Euler", "d", ""),
+                ("Euler", "Euler", ".0f", ""),
                 ("LCC frac", "lcc_frac", ".3f", ""),
-                ("Components", "n_components", "d", ""),
+                ("Components", "n_components", ".0f", ""),
             ]
 
             cols = st.columns([2, 2, 2, 2])
@@ -568,11 +601,14 @@ if volume is not None:
             for label, key, fmt, unit in metrics:
                 rv = real_morph[key]
                 sv = syn_morph[key]
-                if isinstance(rv, (int, np.integer)):
-                    delta_str = f"{sv - rv:+d}"
-                elif rv != 0:
-                    delta_str = f"{(sv - rv) / rv * 100:+.1f}%"
-                else:
+                try:
+                    if isinstance(rv, (int, np.integer)):
+                        delta_str = f"{int(sv) - int(rv):+d}"
+                    elif rv != 0:
+                        delta_str = f"{(sv - rv) / rv * 100:+.1f}%"
+                    else:
+                        delta_str = "—"
+                except (TypeError, ValueError):
                     delta_str = "—"
                 cols = st.columns([2, 2, 2, 2])
                 cols[0].write(label)
