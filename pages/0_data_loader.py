@@ -17,7 +17,11 @@ import sys, io, tempfile, zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "fe_coupling"))
-from step3_generator_fe_coupling import generate_grayscale
+from step3_generator_fe_coupling import (
+    generate_grayscale,
+    generate_bone_volume,
+    generate_bone_volume_calibrated,
+)
 
 # ── Try to import the morphometric function from the v15 generator ──
 try:
@@ -41,12 +45,20 @@ st.caption("Load real micro-CT volumes for parameter extraction or validation")
 # ══════════════════════════════════════════════════════════════
 
 def load_tiff_stack(uploaded_files):
-    """Load a list of uploaded TIFF files as a 3-D volume."""
+    """Load uploaded TIFF files as a 3-D volume.
+    Handles both individual-slice TIFFs and multi-frame TIFFs."""
     from PIL import Image
     slices = []
     for f in sorted(uploaded_files, key=lambda x: x.name):
         img = Image.open(f)
-        slices.append(np.array(img))
+        # Check for multi-frame TIFF (e.g. ImageJ stacks)
+        n_frames = getattr(img, 'n_frames', 1)
+        if n_frames > 1:
+            for i in range(n_frames):
+                img.seek(i)
+                slices.append(np.array(img))
+        else:
+            slices.append(np.array(img))
     return np.stack(slices, axis=0)  # (Z, Y, X)
 
 
@@ -90,53 +102,249 @@ def binarise(volume, threshold):
     return (volume >= threshold).astype(np.uint8)
 
 
+def run_batch_generation(targets, n_samples, base_sigma, close_iters, base_seed,
+                         calibrate_tbth, progress_bar=None):
+    """Generate multiple synthetic volumes from a set of targets.
+
+    Returns list of dicts, each with 'volume', 'grayscale', 'seed'.
+    """
+    samples = []
+    for i in range(n_samples):
+        seed = base_seed + i
+        if progress_bar:
+            progress_bar.progress(
+                (i) / n_samples,
+                text=f"Generating sample {i+1}/{n_samples} (seed={seed})..."
+            )
+
+        if calibrate_tbth:
+            vol = generate_bone_volume_calibrated(
+                nx=targets["nx"], ny=targets["ny"], nz=targets["nz"],
+                target_bvtv=targets["bvtv"],
+                target_tbth_um=float(targets["tbth_um"]),
+                voxel_um=targets["voxel_um"],
+                base_sigma=base_sigma,
+                close_iters=close_iters,
+                seed=seed, verbose=False,
+            )
+        else:
+            vol = generate_bone_volume(
+                nx=targets["nx"], ny=targets["ny"], nz=targets["nz"],
+                target_bvtv=targets["bvtv"],
+                voxel_um=targets["voxel_um"],
+                base_sigma=base_sigma,
+                close_iters=close_iters,
+                seed=seed, verbose=False,
+            )
+
+        gray = generate_grayscale(vol["bone_mask"], seed=seed)
+        samples.append({"volume": vol, "grayscale": gray, "seed": seed})
+
+    if progress_bar:
+        progress_bar.progress(1.0, text="Done!")
+    return samples
+
+
+def display_sample_gallery(samples, voxel_um):
+    """Display a gallery of generated samples with key metrics."""
+    voxel_mm = voxel_um / 1000.0
+    n = len(samples)
+
+    # Summary table
+    st.markdown("#### Sample summary")
+    hcols = st.columns([1, 1, 1, 1, 1, 1])
+    hcols[0].markdown("**#**")
+    hcols[1].markdown("**Seed**")
+    hcols[2].markdown("**BV/TV**")
+    hcols[3].markdown("**Tb.Th (µm)**")
+    hcols[4].markdown("**Tb.N (/mm)**")
+    hcols[5].markdown("**LCC**")
+
+    for i, s in enumerate(samples):
+        m = s["volume"]["morphometrics"]
+        cols = st.columns([1, 1, 1, 1, 1, 1])
+        cols[0].write(f"{i+1}")
+        cols[1].write(f"{s['seed']}")
+        cols[2].write(f"{m['BVTV']:.3f}")
+        cols[3].write(f"{m['TbTh_um_p50']:.0f}")
+        cols[4].write(f"{m['TbN_per_mm']:.2f}")
+        cols[5].write(f"{m['lcc_frac']:.3f}")
+
+    # Visual gallery — show up to 4 per row
+    st.markdown("#### Slice gallery")
+    per_row = min(n, 4)
+    for row_start in range(0, n, per_row):
+        row_samples = samples[row_start:row_start + per_row]
+        img_cols = st.columns(len(row_samples))
+        for j, s in enumerate(row_samples):
+            mask = s["volume"]["bone_mask"]
+            gray = s["grayscale"]
+            nz_s, ny_s, nx_s = mask.shape
+            mid = nz_s // 2
+            ext = [0, nx_s * voxel_mm, 0, ny_s * voxel_mm]
+
+            with img_cols[j]:
+                st.caption(f"Sample {row_start + j + 1} (seed={s['seed']})")
+                fig, axes = plt.subplots(1, 2, figsize=(6, 3))
+                axes[0].imshow(mask[mid].T, cmap='gray', origin='lower', extent=ext)
+                axes[0].set_title("Binary", fontsize=9)
+                axes[0].set_xlabel("x [mm]", fontsize=7)
+                axes[1].imshow(gray[mid].T, cmap='gray', origin='lower', extent=ext,
+                               vmin=0, vmax=255)
+                axes[1].set_title("Grayscale", fontsize=9)
+                axes[1].set_xlabel("x [mm]", fontsize=7)
+                plt.tight_layout()
+                st.pyplot(fig); plt.close()
+
+
 # ══════════════════════════════════════════════════════════════
-# SIDEBAR — Upload
+# SIDEBAR — Input mode
 # ══════════════════════════════════════════════════════════════
 
-st.sidebar.header("Upload real data")
-file_format = st.sidebar.selectbox(
-    "File format",
-    ["TIFF stack (individual files)", "TIFF stack (ZIP)", "NIfTI (.nii/.nii.gz)", "NumPy (.npy)"],
+input_mode = st.sidebar.radio(
+    "Input mode",
+    ["Upload micro-CT scan", "Enter metrics manually"],
+    help="Upload a scan to extract parameters, or type in known values directly.",
 )
 
 uploaded = None
-if file_format == "TIFF stack (individual files)":
-    uploaded = st.sidebar.file_uploader(
-        "Upload TIFF slices", type=["tif", "tiff"],
-        accept_multiple_files=True,
-        help="Select all slices. They will be sorted by filename.",
-    )
-elif file_format == "TIFF stack (ZIP)":
-    uploaded = st.sidebar.file_uploader(
-        "Upload ZIP of TIFF slices", type=["zip"],
-    )
-elif file_format == "NIfTI (.nii/.nii.gz)":
-    uploaded = st.sidebar.file_uploader(
-        "Upload NIfTI file", type=["nii", "gz"],
-    )
-elif file_format == "NumPy (.npy)":
-    uploaded = st.sidebar.file_uploader(
-        "Upload .npy array", type=["npy"],
-        help="Expected shape: (Z, Y, X), uint8 or uint16 grayscale.",
+voxel_um = 39.0
+
+if input_mode == "Upload micro-CT scan":
+    st.sidebar.header("Upload real data")
+    file_format = st.sidebar.selectbox(
+        "File format",
+        ["TIFF stack (individual files)", "TIFF stack (ZIP)", "NIfTI (.nii/.nii.gz)", "NumPy (.npy)"],
     )
 
-st.sidebar.header("Volume info")
-voxel_um = st.sidebar.number_input("Voxel size (µm)", value=39.0, step=1.0,
-    help="Must match the scan resolution for correct Tb.Th / Tb.Sp values.")
+    if file_format == "TIFF stack (individual files)":
+        uploaded = st.sidebar.file_uploader(
+            "Upload TIFF slices", type=["tif", "tiff"],
+            accept_multiple_files=True,
+            help="Select all slices. They will be sorted by filename.",
+        )
+    elif file_format == "TIFF stack (ZIP)":
+        uploaded = st.sidebar.file_uploader(
+            "Upload ZIP of TIFF slices", type=["zip"],
+        )
+    elif file_format == "NIfTI (.nii/.nii.gz)":
+        uploaded = st.sidebar.file_uploader(
+            "Upload NIfTI file", type=["nii", "gz"],
+        )
+    elif file_format == "NumPy (.npy)":
+        uploaded = st.sidebar.file_uploader(
+            "Upload .npy array", type=["npy"],
+            help="Expected shape: (Z, Y, X), uint8 or uint16 grayscale.",
+        )
 
-st.sidebar.header("Binarisation")
-auto_threshold = st.sidebar.checkbox("Auto threshold (Otsu)", value=True)
-manual_threshold = st.sidebar.slider("Manual threshold", 0, 255, 80, 1,
-    help="Only used when auto-threshold is off.")
+    st.sidebar.header("Volume info")
+    voxel_um = st.sidebar.number_input("Voxel size (µm)", value=39.0, step=1.0,
+        help="Must match the scan resolution for correct Tb.Th / Tb.Sp values.")
+
+    st.sidebar.header("Binarisation")
+    auto_threshold = st.sidebar.checkbox("Auto threshold (Otsu)", value=True)
+    manual_threshold = st.sidebar.slider("Manual threshold", 0, 255, 80, 1,
+        help="Only used when auto-threshold is off.")
 
 # ══════════════════════════════════════════════════════════════
-# LOAD VOLUME
+# MODE: MANUAL METRICS
+# ══════════════════════════════════════════════════════════════
+
+if input_mode == "Enter metrics manually":
+    st.subheader("Enter morphometric parameters")
+    st.write(
+        "Type in known values from published data, a previous scan report, "
+        "or literature. These will be pushed directly to the generator as targets."
+    )
+
+    mcol1, mcol2 = st.columns(2)
+    with mcol1:
+        st.markdown("**Structural parameters**")
+        man_bvtv = st.number_input("BV/TV", 0.01, 0.80, 0.33, 0.01, format="%.3f")
+        man_tbth = st.number_input("Tb.Th p50 (µm)", 10.0, 500.0, 180.0, 5.0, format="%.0f")
+        man_tbn = st.number_input("Tb.N (/mm)", 0.1, 10.0, 2.0, 0.1, format="%.2f",
+            help="Optional — for reference only, not used as a generator target.")
+    with mcol2:
+        st.markdown("**Spacing & geometry**")
+        man_tbsp = st.number_input("Tb.Sp p50 (µm)", 10.0, 1000.0, 300.0, 10.0, format="%.0f",
+            help="Optional — for reference only.")
+        man_voxel = st.number_input("Voxel size (µm)", 1.0, 200.0, 39.0, 1.0, format="%.1f")
+
+    st.divider()
+
+    st.markdown("**Volume size for generation**")
+    vcol1, vcol2, vcol3 = st.columns(3)
+    with vcol1:
+        man_nx = st.selectbox("XY size (voxels)", [32, 48, 64, 96, 128], index=4, key="man_nx")
+    with vcol2:
+        man_nz = st.selectbox("Z slices", [16, 24, 32, 40, 60], index=3, key="man_nz")
+    with vcol3:
+        st.metric("Total voxels", f"{man_nx * man_nx * man_nz:,}")
+
+    st.divider()
+
+    # Summary
+    st.markdown("#### Summary")
+    st.json({
+        "BV/TV": man_bvtv,
+        "Tb.Th p50 (µm)": man_tbth,
+        "Tb.N (/mm)": man_tbn,
+        "Tb.Sp p50 (µm)": man_tbsp,
+        "Voxel size (µm)": man_voxel,
+        "Volume": f"{man_nx}×{man_nx}×{man_nz}",
+    })
+
+    st.divider()
+    st.subheader("Generate synthetic samples")
+
+    gcol1, gcol2, gcol3 = st.columns(3)
+    with gcol1:
+        man_n_samples = st.number_input("Number of samples", 1, 50, 5, 1, key="man_n")
+        man_base_seed = st.number_input("Starting seed", value=100, step=1, key="man_seed")
+    with gcol2:
+        man_sigma = st.slider("Base sigma", 1.0, 6.0, 2.5, 0.1, key="man_sigma")
+        man_close = st.slider("Close iters", 0, 6, 3, 1, key="man_close")
+    with gcol3:
+        man_calibrate = st.checkbox("Calibrate Tb.Th", value=True, key="man_cal",
+            help="Iteratively adjust base_sigma to match Tb.Th target.")
+
+    if st.button(f"Generate {man_n_samples} sample(s)", type="primary",
+                 use_container_width=True, key="btn_gen_manual"):
+        targets = {
+            "bvtv": round(man_bvtv, 3),
+            "tbth_um": round(man_tbth, 0),
+            "voxel_um": man_voxel,
+            "nx": man_nx, "ny": man_nx, "nz": man_nz,
+        }
+        st.session_state["target_from_real"] = targets
+
+        progress = st.progress(0, text="Starting...")
+        samples = run_batch_generation(
+            targets, man_n_samples,
+            base_sigma=man_sigma, close_iters=man_close,
+            base_seed=int(man_base_seed),
+            calibrate_tbth=man_calibrate,
+            progress_bar=progress,
+        )
+        st.session_state["generated_samples"] = samples
+        st.session_state["bone_volume"] = samples[0]["volume"]  # first for downstream
+
+        display_sample_gallery(samples, man_voxel)
+
+    elif "generated_samples" in st.session_state:
+        st.divider()
+        st.info(f"{len(st.session_state['generated_samples'])} sample(s) in session. "
+                "Click **Generate** to create new ones.")
+        display_sample_gallery(st.session_state["generated_samples"], man_voxel)
+
+
+# ══════════════════════════════════════════════════════════════
+# MODE: UPLOAD SCAN
 # ══════════════════════════════════════════════════════════════
 
 volume = None
 
-if uploaded:
+if input_mode == "Upload micro-CT scan" and uploaded:
     try:
         with st.spinner("Loading volume..."):
             if file_format == "TIFF stack (individual files)" and len(uploaded) > 0:
@@ -154,11 +362,16 @@ if uploaded:
 if volume is not None:
     # Normalise to 0-255 uint8 if needed
     if volume.dtype != np.uint8:
-        vmin, vmax = volume.min(), volume.max()
+        # Use percentile clipping to avoid outlier hot/dead pixels
+        vmin = np.percentile(volume, 0.5)
+        vmax = np.percentile(volume, 99.5)
         if vmax > vmin:
-            volume = ((volume - vmin) / (vmax - vmin) * 255).astype(np.uint8)
+            clipped = np.clip(volume.astype(np.float32), vmin, vmax)
+            volume = ((clipped - vmin) / (vmax - vmin) * 255).astype(np.uint8)
         else:
             volume = np.zeros_like(volume, dtype=np.uint8)
+        st.sidebar.caption(f"Raw range: {volume.min()}–{volume.max()} | "
+                           f"Clipped at p0.5={vmin:.0f}, p99.5={vmax:.0f}")
 
     nz, ny, nx = volume.shape
     st.success(f"Loaded volume: {nx}×{ny}×{nz} voxels, voxel size = {voxel_um:.1f} µm")
@@ -267,24 +480,43 @@ if volume is not None:
                             "Components": morph["n_components"],
                         })
 
-                # Push to generator
+                # Generate synthetic samples
                 st.divider()
-                st.subheader("Use as generator targets")
-                st.write(
-                    "Click below to store these morphometrics in session state. "
-                    "Then navigate to the **Bone Generator** page — the sidebar "
-                    "sliders will show the matched values."
-                )
-                if st.button("Push to generator targets", key="btn_push"):
-                    st.session_state["target_from_real"] = {
+                st.subheader("Generate matched synthetic samples")
+
+                gcol1, gcol2, gcol3 = st.columns(3)
+                with gcol1:
+                    up_n_samples = st.number_input("Number of samples", 1, 50, 5, 1, key="up_n")
+                    up_base_seed = st.number_input("Starting seed", value=100, step=1, key="up_seed")
+                with gcol2:
+                    up_sigma = st.slider("Base sigma", 1.0, 6.0, 2.5, 0.1, key="up_sigma")
+                    up_close = st.slider("Close iters", 0, 6, 3, 1, key="up_close")
+                with gcol3:
+                    up_calibrate = st.checkbox("Calibrate Tb.Th", value=True, key="up_cal",
+                        help="Iteratively adjust base_sigma to match measured Tb.Th.")
+
+                if st.button(f"Generate {up_n_samples} sample(s)", type="primary",
+                             use_container_width=True, key="btn_gen_upload"):
+                    targets = {
                         "bvtv": round(morph["BVTV"], 3),
                         "tbth_um": round(morph["TbTh_um_p50"], 0),
                         "voxel_um": voxel_um,
-                        "nx": nx,
-                        "ny": ny,
-                        "nz": nz,
+                        "nx": nx, "ny": ny, "nz": nz,
                     }
-                    st.switch_page("pages/1_generator.py")
+                    st.session_state["target_from_real"] = targets
+
+                    progress = st.progress(0, text="Starting...")
+                    samples = run_batch_generation(
+                        targets, up_n_samples,
+                        base_sigma=up_sigma, close_iters=up_close,
+                        base_seed=int(up_base_seed),
+                        calibrate_tbth=up_calibrate,
+                        progress_bar=progress,
+                    )
+                    st.session_state["generated_samples"] = samples
+                    st.session_state["bone_volume"] = samples[0]["volume"]
+
+                    display_sample_gallery(samples, voxel_um)
 
     # ─────────────────────────────────────────────────────────
     # TAB 2 — Validation
@@ -437,7 +669,7 @@ if volume is not None:
                 ax.set_title("Intensity distribution overlay")
                 st.pyplot(fig); plt.close()
 
-else:
+elif input_mode == "Upload micro-CT scan":
     st.info(
         "Upload a real micro-CT volume using the sidebar. "
         "Supported formats: TIFF stack, ZIP of TIFFs, NIfTI, or NumPy (.npy)."
