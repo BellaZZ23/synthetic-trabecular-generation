@@ -154,6 +154,16 @@ colorscale = st.sidebar.selectbox("Colour scale", [
     "Turbo", "Hot", "Jet", "Bone",
 ])
 
+st.sidebar.header("Crop / clip")
+st.sidebar.caption("Crop the volume to see internal trabecular structure")
+clip_axis = st.sidebar.selectbox("Clip axis", ["None", "X", "Y", "Z"], index=3)
+clip_pct = st.sidebar.slider("Clip position (%)", 10, 90, 50, 5,
+    help="Remove this % of the volume along the clip axis to reveal internal structure.")
+
+st.sidebar.header("Subsample")
+subsample = st.sidebar.selectbox("Downsample factor", [1, 2, 4], index=0,
+    help="Reduce volume size for faster rendering and FE. 2 = half resolution.")
+
 st.sidebar.header("Strain source")
 strain_source = st.sidebar.radio("Load strain from", [
     "FE results (session)",
@@ -204,10 +214,33 @@ with tab_3d:
         st.success(f"Bone mask: {nx}×{ny}×{nz} ({source_label}), "
                    f"voxel={voxel_um:.0f} µm, BV/TV={bone_mask.mean():.3f}")
 
-        # Extract surface
+        # Apply subsample
+        view_mask = bone_mask.copy()
+        view_voxel = voxel_mm
+        if subsample > 1:
+            view_mask = view_mask[::subsample, ::subsample, ::subsample]
+            view_voxel = voxel_mm * subsample
+            nz_v, ny_v, nx_v = view_mask.shape
+            st.caption(f"Subsampled: {nx_v}×{ny_v}×{nz_v}")
+
+        # Apply clip to reveal internal structure
+        if clip_axis != "None":
+            nz_v, ny_v, nx_v = view_mask.shape
+            if clip_axis == "Z":
+                cut = int(nz_v * clip_pct / 100)
+                view_mask = view_mask[:cut, :, :]
+            elif clip_axis == "Y":
+                cut = int(ny_v * clip_pct / 100)
+                view_mask = view_mask[:, :cut, :]
+            elif clip_axis == "X":
+                cut = int(nx_v * clip_pct / 100)
+                view_mask = view_mask[:, :, :cut]
+            st.caption(f"Clipped {clip_axis} at {clip_pct}% → shape {view_mask.shape[::-1]}")
+
+        # Extract surface from cropped/subsampled volume
         with st.spinner("Extracting 3D surface (marching cubes)..."):
             try:
-                verts, faces, normals = extract_surface(bone_mask, voxel_mm)
+                verts, faces, normals = extract_surface(view_mask, view_voxel)
                 st.session_state["mesh_verts"] = verts
                 st.session_state["mesh_faces"] = faces
                 st.caption(f"{len(verts):,} vertices, {len(faces):,} triangles")
@@ -222,7 +255,7 @@ with tab_3d:
 
             if strain_vol is not None and strain_source != "None (structure only)":
                 with st.spinner("Mapping strain to surface..."):
-                    vertex_strain = sample_field_at_vertices(verts, strain_vol, voxel_mm)
+                    vertex_strain = sample_field_at_vertices(verts, strain_vol, view_voxel)
 
                 fig = build_mesh_figure(
                     verts, faces,
@@ -243,16 +276,19 @@ with tab_3d:
 
             # Also show a 2D slice alongside for reference
             with st.expander("2D slice reference"):
-                mid_z = nz // 2
-                if nz > 1:
-                    ref_z = st.slider("Z-slice", 0, nz - 1, mid_z, key="ref3d_z")
+                nz_view = view_mask.shape[0]
+                ny_view = view_mask.shape[1]
+                nx_view = view_mask.shape[2]
+                mid_z = nz_view // 2
+                if nz_view > 1:
+                    ref_z = st.slider("Z-slice", 0, nz_view - 1, mid_z, key="ref3d_z")
                 else:
                     ref_z = 0
-                extent = [0, nx * voxel_mm, 0, ny * voxel_mm]
+                extent = [0, nx_view * view_voxel, 0, ny_view * view_voxel]
 
                 if strain_vol is not None and strain_source != "None (structure only)":
                     fig2, axes = plt.subplots(1, 2, figsize=(10, 5))
-                    axes[0].imshow(bone_mask[ref_z].T, cmap='gray', origin='lower', extent=extent)
+                    axes[0].imshow(view_mask[ref_z].T, cmap='gray', origin='lower', extent=extent)
                     axes[0].set_title("Binary mask"); axes[0].set_xlabel("x [mm]"); axes[0].set_ylabel("y [mm]")
                     im = axes[1].imshow(strain_vol[ref_z].T, cmap=colorscale.lower(),
                                         origin='lower', extent=extent)
@@ -260,7 +296,7 @@ with tab_3d:
                     plt.colorbar(im, ax=axes[1])
                 else:
                     fig2, ax = plt.subplots(figsize=(5, 5))
-                    ax.imshow(bone_mask[ref_z].T, cmap='gray', origin='lower', extent=extent)
+                    ax.imshow(view_mask[ref_z].T, cmap='gray', origin='lower', extent=extent)
                     ax.set_xlabel("x [mm]"); ax.set_ylabel("y [mm]")
                     ax.set_title(f"z-slice {ref_z}")
                 plt.tight_layout()
@@ -369,6 +405,31 @@ with tab_fe:
     if bone_mask_fe is None:
         st.warning("No bone volume available. Load or generate one first.")
     else:
+        nz_f, ny_f, nx_f = bone_mask_fe.shape
+        total_voxels = nx_f * ny_f * nz_f
+        bone_voxels = int(bone_mask_fe.sum())
+
+        # Size warning and subsample for FE
+        fe_sub = st.selectbox("FE subsample", [1, 2, 4], index=0, key="fe3d_sub",
+            help="Downsample before FE. 2× halves each dimension → 8× fewer elements.")
+
+        fe_mask = bone_mask_fe
+        fe_voxel_um = voxel_um_fe
+        if fe_sub > 1:
+            fe_mask = bone_mask_fe[::fe_sub, ::fe_sub, ::fe_sub]
+            fe_voxel_um = voxel_um_fe * fe_sub
+
+        fe_bone = int(fe_mask.sum())
+        nz_fe, ny_fe, nx_fe = fe_mask.shape
+
+        if fe_bone > 100_000:
+            st.warning(f"⚠️ {fe_bone:,} bone elements — FE will be slow (minutes). "
+                       f"Consider subsample=2 ({fe_bone // 8:,} elements).")
+        elif fe_bone > 30_000:
+            st.info(f"{fe_bone:,} bone elements — expect ~30-90s.")
+        else:
+            st.caption(f"{fe_bone:,} bone elements — should be quick (~10-30s).")
+
         fcol1, fcol2, fcol3 = st.columns(3)
         with fcol1:
             fe_load = st.selectbox("Load case", ["compression", "tension", "torque"], key="fe3d_load")
@@ -390,12 +451,12 @@ with tab_fe:
         if st.button("Run FE & build 3D strain map", type="primary",
                      use_container_width=True, key="btn_fe3d"):
 
-            voxel_mm_fe = voxel_um_fe / 1000.0
+            voxel_mm_fe = fe_voxel_um / 1000.0
 
-            # Step 1: Run FE
-            with st.spinner(f"Running FE ({fe_load})..."):
+            # Step 1: Run FE on (possibly subsampled) volume
+            with st.spinner(f"Running FE ({fe_load}) on {nx_fe}×{ny_fe}×{nz_fe}..."):
                 fe = run_fe_analysis(
-                    bone_mask_fe, voxel_mm_fe,
+                    fe_mask, voxel_mm_fe,
                     load_type=fe_load, E_bone=fe_E,
                     applied_strain=fe_strain, verbose=False,
                 )
@@ -407,15 +468,16 @@ with tab_fe:
             # Step 2: Convert strain to volume
             with st.spinner("Converting strain to voxel volume..."):
                 strain_vol = strain_volume_from_fe(
-                    fe, bone_mask_fe, voxel_mm_fe, component=strain_comp,
+                    fe, fe_mask, voxel_mm_fe, component=strain_comp,
                 )
 
             st.session_state["strain_volume_3d"] = strain_vol
             st.session_state["strain_label_3d"] = strain_comp
+            st.session_state["fe_voxel_mm"] = voxel_mm_fe
 
             # Step 3: Extract surface and map
             with st.spinner("Building 3D surface..."):
-                verts, faces, normals = extract_surface(bone_mask_fe, voxel_mm_fe)
+                verts, faces, normals = extract_surface(fe_mask, voxel_mm_fe)
                 vertex_strain = sample_field_at_vertices(verts, strain_vol, voxel_mm_fe)
 
             st.session_state["mesh_verts"] = verts
@@ -453,7 +515,7 @@ with tab_fe:
             strain_label = st.session_state.get("strain_label_3d", "")
 
             if verts is not None:
-                voxel_mm_fe = voxel_um_fe / 1000.0
+                voxel_mm_fe = st.session_state.get("fe_voxel_mm", voxel_um_fe / 1000.0)
                 vertex_strain = sample_field_at_vertices(verts, strain_vol, voxel_mm_fe)
                 fig = build_mesh_figure(
                     verts, faces,
