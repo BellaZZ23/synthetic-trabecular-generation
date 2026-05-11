@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "fe_coupling"))
-from step3_generator_fe_coupling import generate_bone_volume, generate_grayscale
+from step3_generator_fe_coupling import generate_bone_volume, generate_bone_volume_calibrated, generate_grayscale
 
 st.set_page_config(page_title="Bone generator", page_icon="🦴", layout="wide")
 st.title("Bone volume generator")
@@ -37,6 +37,8 @@ else:
 st.sidebar.header("Morphometric targets")
 target_bvtv = st.sidebar.slider("Target BV/TV", 0.05, 0.50, default_bvtv, 0.01)
 tbth_um = st.sidebar.slider("Target Tb.Th (um)", 80, 300, default_tbth, 5)
+calibrate_tbth = st.sidebar.checkbox("Calibrate Tb.Th (iterative)", value=bool(real_targets),
+    help="Iteratively adjusts base_sigma to match target Tb.Th. Slower but more accurate.")
 
 # ── Sidebar: Volume geometry ──
 st.sidebar.header("Volume geometry")
@@ -106,20 +108,42 @@ if st.sidebar.button(
     use_container_width=True,
     help=f"{total_voxels:,} voxels — {est_time}",
 ):
-    with st.spinner(f"Generating {nx}x{nx}x{nz} volume (BV/TV={target_bvtv:.2f})..."):
-        vol = generate_bone_volume(
-            nx=nx, ny=nx, nz=nz,
-            target_bvtv=target_bvtv,
-            voxel_um=voxel_um,
-            base_sigma=base_sigma,
-            warp_amp=warp_amp,
-            warp_sigma=warp_sigma,
-            plate_weight=plate_weight,
-            close_iters=proto_close_iters,
-            min_component=min_component,
-            seed=int(seed),
-            verbose=False,
-        )
+    spinner_msg = f"Generating {nx}x{nx}x{nz} volume (BV/TV={target_bvtv:.2f})"
+    if calibrate_tbth:
+        spinner_msg += f", calibrating Tb.Th→{tbth_um} µm..."
+    else:
+        spinner_msg += "..."
+
+    with st.spinner(spinner_msg):
+        if calibrate_tbth:
+            vol = generate_bone_volume_calibrated(
+                nx=nx, ny=nx, nz=nz,
+                target_bvtv=target_bvtv,
+                target_tbth_um=float(tbth_um),
+                voxel_um=voxel_um,
+                base_sigma=base_sigma,
+                warp_amp=warp_amp,
+                warp_sigma=warp_sigma,
+                plate_weight=plate_weight,
+                close_iters=proto_close_iters,
+                min_component=min_component,
+                seed=int(seed),
+                verbose=False,
+            )
+        else:
+            vol = generate_bone_volume(
+                nx=nx, ny=nx, nz=nz,
+                target_bvtv=target_bvtv,
+                voxel_um=voxel_um,
+                base_sigma=base_sigma,
+                warp_amp=warp_amp,
+                warp_sigma=warp_sigma,
+                plate_weight=plate_weight,
+                close_iters=proto_close_iters,
+                min_component=min_component,
+                seed=int(seed),
+                verbose=False,
+            )
 
     st.session_state["bone_volume"] = vol
     st.session_state["gray_params"] = {
@@ -234,6 +258,10 @@ if st.sidebar.button(
 
     with st.expander("Calibration details"):
         st.json(vol["calibration"])
+        if "calibration_log" in vol:
+            st.markdown("**Tb.Th calibration iterations:**")
+            for step in vol["calibration_log"]:
+                st.text(f"  σ={step['sigma']:.3f} → Tb.Th={step['tbth_um']:.1f} µm")
 
     st.success(
         f"Volume: {nx_a}x{ny_a}x{nz_a} | seed={vol['seed']} | "

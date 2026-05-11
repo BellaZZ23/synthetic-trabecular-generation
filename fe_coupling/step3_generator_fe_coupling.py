@@ -128,6 +128,106 @@ def generate_bone_volume(
     }
 
 
+def generate_bone_volume_calibrated(
+    nx: int = 128,
+    ny: int = 128,
+    nz: int = 40,
+    target_bvtv: float = 0.33,
+    target_tbth_um: float = None,
+    voxel_um: float = 39.0,
+    base_sigma: float = 2.5,
+    warp_amp: float = 1.2,
+    warp_sigma: float = 12.0,
+    plate_weight: float = 0.7,
+    close_iters: int = 3,
+    min_component: int = 400,
+    seed: int = 100,
+    verbose: bool = True,
+    max_iters: int = 8,
+    tbth_tol_um: float = 10.0,
+) -> dict:
+    """
+    Generate a bone volume with iterative Tb.Th calibration.
+
+    If target_tbth_um is given, performs a bisection search on base_sigma
+    to match the target trabecular thickness. BV/TV is calibrated at every
+    iteration by the zero-crossing threshold.
+
+    Args:
+        target_tbth_um: target median trabecular thickness in microns.
+                        If None, falls back to generate_bone_volume (no Tb.Th cal).
+        tbth_tol_um:    acceptable error in Tb.Th (default ±10 µm).
+        max_iters:      maximum bisection iterations.
+        (all other args forwarded to generate_bone_volume)
+
+    Returns:
+        Same dict as generate_bone_volume, with an extra key:
+            calibration_log: list of (base_sigma, measured_tbth) per iteration
+    """
+    if target_tbth_um is None:
+        return generate_bone_volume(
+            nx=nx, ny=ny, nz=nz, target_bvtv=target_bvtv,
+            voxel_um=voxel_um, base_sigma=base_sigma,
+            warp_amp=warp_amp, warp_sigma=warp_sigma,
+            plate_weight=plate_weight, close_iters=close_iters,
+            min_component=min_component, seed=seed, verbose=verbose,
+        )
+
+    # Bisection search: base_sigma controls Tb.Th
+    # Higher sigma → thicker trabeculae, lower → thinner
+    sigma_lo = 0.8
+    sigma_hi = 6.0
+    sigma_mid = base_sigma  # start from user's initial guess
+    cal_log = []
+
+    if verbose:
+        print(f"Tb.Th calibration: target={target_tbth_um:.0f} µm, tol=±{tbth_tol_um:.0f} µm")
+
+    best_result = None
+    best_error = float('inf')
+
+    for iteration in range(max_iters):
+        result = generate_bone_volume(
+            nx=nx, ny=ny, nz=nz, target_bvtv=target_bvtv,
+            voxel_um=voxel_um, base_sigma=sigma_mid,
+            warp_amp=warp_amp, warp_sigma=warp_sigma,
+            plate_weight=plate_weight, close_iters=close_iters,
+            min_component=min_component, seed=seed, verbose=False,
+        )
+
+        measured_tbth = result["morphometrics"]["TbTh_um_p50"]
+        error = measured_tbth - target_tbth_um
+        cal_log.append({"sigma": round(sigma_mid, 3), "tbth_um": round(measured_tbth, 1)})
+
+        if verbose:
+            print(f"  iter {iteration}: sigma={sigma_mid:.3f} → Tb.Th={measured_tbth:.1f} µm "
+                  f"(error={error:+.1f} µm)")
+
+        if abs(error) < best_error:
+            best_error = abs(error)
+            best_result = result
+
+        if abs(error) <= tbth_tol_um:
+            if verbose:
+                print(f"  Converged in {iteration + 1} iterations")
+            break
+
+        # Bisect: too thick → reduce sigma, too thin → increase sigma
+        if error > 0:
+            sigma_hi = sigma_mid
+        else:
+            sigma_lo = sigma_mid
+        sigma_mid = 0.5 * (sigma_lo + sigma_hi)
+
+    else:
+        if verbose:
+            print(f"  Did not converge after {max_iters} iterations, "
+                  f"using best (error={best_error:.1f} µm)")
+
+    best_result["calibration_log"] = cal_log
+    return best_result
+
+
 # ══════════════════════════════════════════════════════════════
 # GRAYSCALE WRAPPER
 # ══════════════════════════════════════════════════════════════
