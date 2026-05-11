@@ -327,14 +327,10 @@ if input_mode == "Enter metrics manually":
             progress_bar=progress,
         )
         st.session_state["generated_samples"] = samples
-        st.session_state["bone_volume"] = samples[0]["volume"]  # first for downstream
+        st.session_state["bone_volume"] = samples[0]["volume"]
 
-        display_sample_gallery(samples, man_voxel)
-
-    elif "generated_samples" in st.session_state:
-        st.divider()
-        st.info(f"{len(st.session_state['generated_samples'])} sample(s) in session. "
-                "Click **Generate** to create new ones.")
+    # Always show gallery from session_state (persists across reruns)
+    if "generated_samples" in st.session_state:
         display_sample_gallery(st.session_state["generated_samples"], man_voxel)
 
 
@@ -449,11 +445,15 @@ if volume is not None:
                        "Check that `synthetic_trabecular_v15_morphometric_control.py` "
                        "is on the Python path.")
         else:
+            # Measure button — stores to session_state
             if st.button("Measure morphometrics", type="primary", key="btn_measure"):
                 with st.spinner("Measuring..."):
                     morph = measure_all_morphometrics(bone_mask, voxel_um)
-
                 st.session_state["real_morphometrics"] = morph
+
+            # Display from session_state (persists across reruns)
+            if "real_morphometrics" in st.session_state:
+                morph = st.session_state["real_morphometrics"]
 
                 c1, c2, c3, c4, c5 = st.columns(5)
                 c1.metric("BV/TV", f"{morph['BVTV']:.3f}")
@@ -480,7 +480,7 @@ if volume is not None:
                             "Components": morph["n_components"],
                         })
 
-                # Generate synthetic samples
+                # ── Generate synthetic samples ──
                 st.divider()
                 st.subheader("Generate matched synthetic samples")
 
@@ -516,7 +516,10 @@ if volume is not None:
                     st.session_state["generated_samples"] = samples
                     st.session_state["bone_volume"] = samples[0]["volume"]
 
-                    display_sample_gallery(samples, voxel_um)
+                # Always show gallery from session_state
+                if "generated_samples" in st.session_state:
+                    display_sample_gallery(
+                        st.session_state["generated_samples"], voxel_um)
 
     # ─────────────────────────────────────────────────────────
     # TAB 2 — Validation
