@@ -105,7 +105,7 @@ else:
 if st.sidebar.button(
     f"Generate {nx}x{nx}x{nz} volume",
     type="primary",
-    use_container_width=True,
+    width='stretch',
     help=f"{total_voxels:,} voxels — {est_time}",
 ):
     spinner_msg = f"Generating {nx}x{nx}x{nz} volume (BV/TV={target_bvtv:.2f})"

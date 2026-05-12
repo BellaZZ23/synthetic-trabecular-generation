@@ -326,7 +326,7 @@ if input_mode == "Enter metrics manually":
             man_bg_tex = st.slider("Background texture SD", 0.0, 5.0, 0.5, 0.1, key="man_btex")
 
     if st.button(f"Generate {man_n_samples} sample(s)", type="primary",
-                 use_container_width=True, key="btn_gen_manual"):
+                 width='stretch', key="btn_gen_manual"):
         targets = {
             "bvtv": round(man_bvtv, 3),
             "tbth_um": round(man_tbth, 0),
@@ -526,7 +526,7 @@ if volume is not None:
                         up_bg_tex = st.slider("Background texture SD", 0.0, 5.0, 0.5, 0.1, key="up_btex")
 
                 if st.button(f"Generate {up_n_samples} sample(s)", type="primary",
-                             use_container_width=True, key="btn_gen_upload"):
+                             width='stretch', key="btn_gen_upload"):
                     targets = {
                         "bvtv": round(morph["BVTV"], 3),
                         "tbth_um": round(morph["TbTh_um_p50"], 0),

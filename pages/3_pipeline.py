@@ -165,7 +165,7 @@ with tab_gen:
         st.metric("Total voxels", f"{total:,}")
 
     # ── Run pipeline ──
-    if st.button("Run full pipeline", type="primary", use_container_width=True, key="btn_pipeline"):
+    if st.button("Run full pipeline", type="primary", width='stretch', key="btn_pipeline"):
         voxel_mm = p_voxel / 1000.0
 
         # Step 1: Generate bone volume

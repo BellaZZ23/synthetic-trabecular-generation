@@ -272,7 +272,7 @@ with tab_3d:
                     title="3D bone structure",
                 )
 
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
             # Also show a 2D slice alongside for reference
             with st.expander("2D slice reference"):
@@ -449,7 +449,7 @@ with tab_fe:
         ], key="fe3d_comp")
 
         if st.button("Run FE & build 3D strain map", type="primary",
-                     use_container_width=True, key="btn_fe3d"):
+                     width='stretch', key="btn_fe3d"):
 
             voxel_mm_fe = fe_voxel_um / 1000.0
 
@@ -492,7 +492,7 @@ with tab_fe:
                 opacity=mesh_opacity,
                 title=f"3D bone — {strain_comp} ({fe_load})",
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
             # Strain statistics
             strain_data = fe["strain_field"]
@@ -525,4 +525,4 @@ with tab_fe:
                     opacity=mesh_opacity,
                     title=f"3D bone — {strain_label} (previous run)",
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
