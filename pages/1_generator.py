@@ -15,7 +15,7 @@ from step3_generator_fe_coupling import generate_bone_volume, generate_bone_volu
 
 st.set_page_config(page_title="Bone generator", page_icon="🦴", layout="wide")
 st.title("Bone volume generator")
-st.caption("v15.3 zero-crossing Gaussian random field — published honeycomb defaults")
+st.caption("v15.3 zero-crossing Gaussian random field — optimised trabecular defaults")
 
 # ── Check for targets pushed from Data Loader ──
 real_targets = st.session_state.get("target_from_real", None)
@@ -51,21 +51,21 @@ voxel_um = st.sidebar.number_input("Voxel size (um)", value=default_voxel, step=
 
 # ── Sidebar: Field parameters ──
 st.sidebar.header("Field parameters")
-base_sigma = st.sidebar.slider("Base sigma", 1.0, 6.0, 2.5, 0.1,
+base_sigma = st.sidebar.slider("Base sigma", 1.0, 6.0, 2.2, 0.1,
     help="Spatial frequency of the Gaussian field. Higher = coarser plates.")
 aniso_ratio = st.sidebar.slider("Anisotropy ratio", 0.5, 3.0, 1.0, 0.1,
     help="1.0 = isotropic. >1 elongates in z (vertebral-like).")
 
 # ── Sidebar: Elastic warp ──
 st.sidebar.header("Elastic warp")
-warp_amp = st.sidebar.slider("Warp amplitude", 0.0, 3.0, 1.2, 0.1,
+warp_amp = st.sidebar.slider("Warp amplitude", 0.0, 3.0, 2.0, 0.1,
     help="Deformation strength. Higher = more natural irregularity.")
-warp_sigma = st.sidebar.slider("Warp sigma", 3.0, 25.0, 12.0, 0.5,
+warp_sigma = st.sidebar.slider("Warp sigma", 3.0, 25.0, 10.0, 0.5,
     help="Correlation length of the deformation field.")
 
 # ── Sidebar: Architecture ──
 st.sidebar.header("Architecture")
-plate_weight = st.sidebar.slider("Plate weight", 0.0, 1.0, 0.7, 0.05,
+plate_weight = st.sidebar.slider("Plate weight", 0.0, 1.0, 0.6, 0.05,
     help=">=0.5 uses plate path (zero-crossing walls). <0.5 uses rod+skeleton path.")
 rod_weight = st.sidebar.slider("Rod weight", 0.0, 1.0, 0.3, 0.05)
 if plate_weight + rod_weight > 0:
@@ -73,9 +73,9 @@ if plate_weight + rod_weight > 0:
 
 # ── Sidebar: Morphological cleanup ──
 st.sidebar.header("Morphological cleanup")
-proto_close_iters = st.sidebar.slider("Close iterations", 0, 6, 3, 1,
+proto_close_iters = st.sidebar.slider("Close iterations", 0, 6, 1, 1,
     help="Binary closing to connect gaps. More = thicker, more connected.")
-min_component = st.sidebar.slider("Min component size", 0, 1000, 400, 50,
+min_component = st.sidebar.slider("Min component size", 0, 1000, 200, 50,
     help="Remove disconnected fragments smaller than this (voxels).")
 
 # ── Sidebar: Grayscale synthesis ──
@@ -274,4 +274,4 @@ else:
         st.info("Previous volume in session. Click 'Generate' for a new one, or go to FE solver.")
     else:
         st.info("Set parameters in the sidebar and click Generate. "
-                "Published defaults: 128x128x40, BV/TV=0.33, plate_weight=0.7.")
+                "Defaults: 128x128x40, BV/TV=0.33, sigma=2.2, warp=2.0, close=1.")
