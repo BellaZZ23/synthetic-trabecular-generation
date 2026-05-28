@@ -254,17 +254,26 @@ with tab_3d:
             strain_label = st.session_state.get("strain_label_3d", "")
 
             if strain_vol is not None and strain_source != "None (structure only)":
-                with st.spinner("Mapping strain to surface..."):
-                    vertex_strain = sample_field_at_vertices(verts, strain_vol, view_voxel)
+                try:
+                    with st.spinner("Mapping strain to surface..."):
+                        vertex_strain = sample_field_at_vertices(verts, strain_vol, view_voxel)
 
-                fig = build_mesh_figure(
-                    verts, faces,
-                    color_values=vertex_strain,
-                    colorscale=colorscale,
-                    color_label=strain_label,
-                    opacity=mesh_opacity,
-                    title=f"3D bone + {strain_label}",
-                )
+                    fig = build_mesh_figure(
+                        verts, faces,
+                        color_values=vertex_strain,
+                        colorscale=colorscale,
+                        color_label=strain_label,
+                        opacity=mesh_opacity,
+                        title=f"3D bone + {strain_label}",
+                    )
+                except (IndexError, ValueError) as e:
+                    st.warning(f"Strain data shape {strain_vol.shape} doesn't match "
+                               f"bone volume — showing structure only. ({e})")
+                    fig = build_mesh_figure(
+                        verts, faces,
+                        opacity=mesh_opacity,
+                        title="3D bone structure",
+                    )
             else:
                 fig = build_mesh_figure(
                     verts, faces,
@@ -290,8 +299,11 @@ with tab_3d:
                     fig2, axes = plt.subplots(1, 2, figsize=(10, 5))
                     axes[0].imshow(view_mask[ref_z].T, cmap='gray', origin='lower', extent=extent)
                     axes[0].set_title("Binary mask"); axes[0].set_xlabel("x [mm]"); axes[0].set_ylabel("y [mm]")
-                    im = axes[1].imshow(strain_vol[ref_z].T, cmap=colorscale.lower(),
-                                        origin='lower', extent=extent)
+                    # Guard against shape mismatch between clipped volume and strain data
+                    strain_z = min(ref_z, strain_vol.shape[0] - 1)
+                    strain_extent = [0, strain_vol.shape[2] * view_voxel, 0, strain_vol.shape[1] * view_voxel]
+                    im = axes[1].imshow(strain_vol[strain_z].T, cmap=colorscale.lower(),
+                                        origin='lower', extent=strain_extent)
                     axes[1].set_title(strain_label); axes[1].set_xlabel("x [mm]")
                     plt.colorbar(im, ax=axes[1])
                 else:
