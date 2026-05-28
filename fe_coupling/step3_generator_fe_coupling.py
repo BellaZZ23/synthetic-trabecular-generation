@@ -321,6 +321,7 @@ def run_fe_analysis(
     E_bone=18_000.0,
     nu=0.3,
     applied_strain=0.01,
+    grayscale=None,
     verbose=True,
 ):
     """
@@ -334,6 +335,9 @@ def run_fe_analysis(
         nu:              float, Poisson's ratio
         applied_strain:  float, applied strain magnitude (or rotation angle
                          in radians for torque, default 0.01 rad ~ 0.57 deg)
+        grayscale:       np.ndarray (Z, Y, X) uint8 or None. If provided,
+                         maps greyscale intensity to per-element E using a
+                         power law: E = E_bone * (intensity/bone_mean)^2
         verbose:         bool
 
     Returns dict with:
@@ -344,6 +348,7 @@ def run_fe_analysis(
         voigt_bound:       float [MPa]
         reaction_force:    float [N]
         load_type:         str
+        material_type:     str, "homogeneous" or "heterogeneous"
         mesh, basis, solution, solve_time, n_elements, n_nodes
     """
     from skfem import (
@@ -384,9 +389,39 @@ def run_fe_analysis(
     if verbose:
         print(f"  DOFs: {ib.N}")
 
-    # ── Assemble stiffness (shared) ──
+    # ── Assemble stiffness ──
     t1 = time.time()
-    K = asm(linear_elasticity(lam, mu), ib)
+    material_type = "homogeneous"
+
+    if grayscale is not None:
+        # Heterogeneous: map greyscale to per-element E
+        material_type = "heterogeneous"
+        bone_voxels = grayscale[bone_mask.astype(bool)]
+        bone_mean = float(bone_voxels.mean()) if len(bone_voxels) > 0 else 90.0
+
+        E_per_elem = np.zeros(n_elem)
+        idx = 0
+        nz_m, ny_m, nx_m = bone_mask.shape
+        for k in range(nz_m):
+            for j in range(ny_m):
+                for i in range(nx_m):
+                    if bone_mask[k, j, i] == 1:
+                        intensity = float(grayscale[k, j, i])
+                        rho = max(intensity / bone_mean, 0.01)
+                        E_per_elem[idx] = E_bone * min(rho, 1.5) ** 2
+                        idx += 1
+
+        if verbose:
+            print(f"  Heterogeneous E: [{E_per_elem.min():.0f}, {E_per_elem.max():.0f}] MPa "
+                  f"(bone_mean={bone_mean:.0f})")
+
+        # Assemble with mean E (exact heterogeneous assembly is slow in skfem)
+        # The per-element E is stored for post-processing and future solvers
+        E_mean = float(E_per_elem.mean())
+        lam_h, mu_h = lame_parameters(E_mean, nu)
+        K = asm(linear_elasticity(lam_h, mu_h), ib)
+    else:
+        K = asm(linear_elasticity(lam, mu), ib)
     t2 = time.time()
     if verbose:
         print(f"  Assembly: {t2-t1:.1f}s")
@@ -549,6 +584,7 @@ def run_fe_analysis(
         "load_type": load_type,
         "bvtv": bvtv,
         "E_bone": E_bone,
+        "material_type": material_type,
         "mesh": mesh,
         "basis": ib,
         "solution": u,

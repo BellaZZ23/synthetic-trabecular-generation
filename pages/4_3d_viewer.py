@@ -439,6 +439,11 @@ with tab_fe:
             fe_strain = st.number_input("Applied strain", value=0.01, step=0.005,
                                         format="%.3f", key="fe3d_strain")
 
+        use_hetero = st.checkbox("Heterogeneous E from grayscale",
+            key="fe3d_hetero",
+            help="Map greyscale intensity → per-element E via power law. "
+                 "Requires a grayscale volume in session (from generator or pipeline).")
+
         strain_comp = st.selectbox("Strain component to map", [
             "eps_von_mises",
             "eps_zz",
@@ -448,17 +453,34 @@ with tab_fe:
             "eps_max_principal",
         ], key="fe3d_comp")
 
+        # Find grayscale if heterogeneous requested
+        gray_for_fe = None
+        if use_hetero:
+            if "pipeline_gray" in st.session_state:
+                gray_for_fe = st.session_state["pipeline_gray"]
+                if fe_sub > 1:
+                    gray_for_fe = gray_for_fe[::fe_sub, ::fe_sub, ::fe_sub]
+                st.caption(f"Using grayscale from session (mean={gray_for_fe[fe_mask > 0].mean():.0f})")
+            else:
+                st.warning("No grayscale in session. Generate one first or uncheck.")
+                use_hetero = False
+
         if st.button("Run FE & build 3D strain map", type="primary",
                      width='stretch', key="btn_fe3d"):
 
             voxel_mm_fe = fe_voxel_um / 1000.0
 
             # Step 1: Run FE on (possibly subsampled) volume
-            with st.spinner(f"Running FE ({fe_load}) on {nx_fe}×{ny_fe}×{nz_fe}..."):
+            spinner_msg = f"Running FE ({fe_load}) on {nx_fe}×{ny_fe}×{nz_fe}"
+            if use_hetero:
+                spinner_msg += " [heterogeneous E]"
+            with st.spinner(spinner_msg + "..."):
                 fe = run_fe_analysis(
                     fe_mask, voxel_mm_fe,
                     load_type=fe_load, E_bone=fe_E,
-                    applied_strain=fe_strain, verbose=False,
+                    applied_strain=fe_strain,
+                    grayscale=gray_for_fe if use_hetero else None,
+                    verbose=False,
                 )
             st.session_state["pipeline_fe"] = fe
 

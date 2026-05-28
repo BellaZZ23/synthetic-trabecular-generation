@@ -35,6 +35,14 @@ try:
 except ImportError:
     HAS_MORPH = False
 
+# ── Try to import BoneJ-equivalent measurements ──
+try:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "fe_coupling"))
+    from bonej_measurements import measure_all_bonej
+    HAS_BONEJ = True
+except ImportError:
+    HAS_BONEJ = False
+
 st.set_page_config(page_title="Data loader", page_icon="📂", layout="wide")
 st.title("Data loader")
 st.caption("Load real micro-CT volumes for parameter extraction or validation")
@@ -460,45 +468,113 @@ if volume is not None:
             st.pyplot(fig); plt.close()
 
         # Morphometric analysis
-        if not HAS_MORPH:
-            st.warning("Could not import `measure_all_morphometrics`. "
-                       "Check that `synthetic_trabecular_v15_morphometric_control.py` "
-                       "is on the Python path.")
+        if not HAS_MORPH and not HAS_BONEJ:
+            st.warning("No morphometric measurement module available.")
         else:
-            # Measure button — stores to session_state
+            # Method selector
+            methods = []
+            if HAS_BONEJ:
+                methods.append("BoneJ (validated)")
+            if HAS_MORPH:
+                methods.append("Built-in (v15)")
+            morph_method = st.radio("Measurement method", methods, horizontal=True,
+                key="morph_method")
+
+            # BoneJ options
+            include_da = False
+            include_smi = False
+            if morph_method == "BoneJ (validated)":
+                bcol1, bcol2 = st.columns(2)
+                with bcol1:
+                    include_da = st.checkbox("Degree of Anisotropy (DA)", value=False,
+                        key="bonej_da",
+                        help="Mean Intercept Length — adds ~10-30s.")
+                with bcol2:
+                    include_smi = st.checkbox("Structure Model Index (SMI)", value=False,
+                        key="bonej_smi",
+                        help="Plates=0, Rods=3, Spheres=4.")
+
+            # Measure button
             if st.button("Measure morphometrics", type="primary", key="btn_measure"):
                 with st.spinner("Measuring..."):
-                    morph = measure_all_morphometrics(bone_mask, voxel_um)
+                    if morph_method == "BoneJ (validated)":
+                        morph = measure_all_bonej(bone_mask, voxel_um,
+                                                   include_anisotropy=include_da,
+                                                   include_smi=include_smi)
+                    else:
+                        morph = measure_all_morphometrics(bone_mask, voxel_um)
                 st.session_state["real_morphometrics"] = morph
+                st.session_state["morph_method_used"] = morph_method
 
-            # Display from session_state (persists across reruns)
+            # Display from session_state
             if "real_morphometrics" in st.session_state:
                 morph = st.session_state["real_morphometrics"]
+                method_used = st.session_state.get("morph_method_used", "")
 
-                c1, c2, c3, c4, c5 = st.columns(5)
-                c1.metric("BV/TV", f"{morph['BVTV']:.3f}")
-                c2.metric("Tb.Th (p50)", f"{morph['TbTh_um_p50']:.0f} µm")
-                c3.metric("Tb.N", f"{morph['TbN_per_mm']:.2f} /mm")
-                c4.metric("Tb.Sp (p50)", f"{morph['TbSp_um_p50']:.0f} µm")
-                c5.metric("LCC", f"{morph['lcc_frac']:.3f}")
+                # Main metrics row
+                metric_cols = st.columns(5 + (1 if 'DA' in morph else 0) + (1 if 'SMI' in morph else 0))
+                metric_cols[0].metric("BV/TV", f"{morph['BVTV']:.3f}")
+                metric_cols[1].metric("Tb.Th (p50)", f"{morph['TbTh_um_p50']:.0f} µm")
+                metric_cols[2].metric("Tb.N", f"{morph['TbN_per_mm']:.2f} /mm")
+                metric_cols[3].metric("Tb.Sp (p50)", f"{morph['TbSp_um_p50']:.0f} µm")
+                metric_cols[4].metric("LCC", f"{morph['lcc_frac']:.3f}")
+                col_idx = 5
+                if 'DA' in morph:
+                    da_label = "isotropic" if morph['DA'] < 0.3 else "anisotropic"
+                    metric_cols[col_idx].metric("DA", f"{morph['DA']:.3f}", da_label)
+                    col_idx += 1
+                if 'SMI' in morph:
+                    smi_label = "plates" if morph['SMI'] < 1 else ("rods" if morph['SMI'] > 2 else "mixed")
+                    metric_cols[col_idx].metric("SMI", f"{morph['SMI']:.2f}", smi_label)
+
+                if method_used:
+                    st.caption(f"Measured with: {method_used}")
 
                 with st.expander("Full measurements"):
                     mcol1, mcol2 = st.columns(2)
                     with mcol1:
-                        st.json({
+                        d1 = {
                             "BV/TV": round(morph["BVTV"], 4),
                             "Tb.Th p50 (µm)": round(morph["TbTh_um_p50"], 1),
                             "Tb.Th p90 (µm)": round(morph["TbTh_um_p90"], 1),
                             "Tb.N (/mm)": round(morph["TbN_per_mm"], 3),
-                        })
+                        }
+                        if 'DA' in morph:
+                            d1["DA"] = round(morph["DA"], 4)
+                        st.json(d1)
                     with mcol2:
-                        st.json({
+                        d2 = {
                             "Tb.Sp p50 (µm)": round(morph["TbSp_um_p50"], 1),
                             "Tb.Sp p90 (µm)": round(morph["TbSp_um_p90"], 1),
                             "Euler number": morph["Euler"],
                             "LCC fraction": round(morph["lcc_frac"], 4),
                             "Components": morph["n_components"],
-                        })
+                        }
+                        if 'SMI' in morph:
+                            d2["SMI"] = round(morph["SMI"], 2)
+                        if 'connectivity_density' in morph:
+                            d2["Conn. density"] = round(morph["connectivity_density"], 6)
+                        st.json(d2)
+
+                # Thickness map visualization (BoneJ only)
+                if 'thickness_map' in morph:
+                    with st.expander("Thickness & spacing maps"):
+                        mid_t = bone_mask.shape[0] // 2
+                        fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+                        im0 = axes[0].imshow(morph['thickness_map'][mid_t].T,
+                                              cmap='hot', origin='lower',
+                                              extent=[0, nx*voxel_mm, 0, ny*voxel_mm])
+                        axes[0].set_title("Tb.Th map (µm)")
+                        axes[0].set_xlabel("x [mm]"); axes[0].set_ylabel("y [mm]")
+                        plt.colorbar(im0, ax=axes[0])
+                        im1 = axes[1].imshow(morph['spacing_map'][mid_t].T,
+                                              cmap='cool', origin='lower',
+                                              extent=[0, nx*voxel_mm, 0, ny*voxel_mm])
+                        axes[1].set_title("Tb.Sp map (µm)")
+                        axes[1].set_xlabel("x [mm]")
+                        plt.colorbar(im1, ax=axes[1])
+                        plt.tight_layout()
+                        st.pyplot(fig); plt.close()
 
                 # ── Generate synthetic samples ──
                 st.divider()
