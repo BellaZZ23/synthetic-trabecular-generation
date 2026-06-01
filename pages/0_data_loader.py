@@ -58,43 +58,45 @@ st.caption("Load real micro-CT volumes for parameter extraction or validation")
 def register_volumes_rigid(fixed_np: np.ndarray, moving_np: np.ndarray,
                             voxel_um: float = 39.0) -> tuple:
     """
-    Rigid-body (6 DOF) registration of two uint8 grayscale volumes using
-    SimpleITK Mattes mutual information + gradient descent.
+    Rigid-body (6 DOF) registration using SimpleITK Mattes mutual
+    information + gradient descent.
 
-    Returns
-    -------
-    registered_np   : ndarray  – moving volume resampled into fixed space
-    transform       : SimpleITK.Transform  – transform for reuse on other fields
+    Fixes vs v1:
+      - Casts to float32 before passing to SimpleITK (uint8 causes overlap issues)
+      - Uses CenteredTransformInitializer with MOMENTS so images are pre-aligned
+        by centre of mass before optimisation — prevents overlap errors
+      - Reduced sampling percentage for speed on large volumes
     """
     import SimpleITK as sitk
 
     spacing = [voxel_um * 1e-3] * 3  # mm
 
-    fixed = sitk.GetImageFromArray(fixed_np.astype(np.float32))
+    fixed  = sitk.GetImageFromArray(fixed_np.astype(np.float32))
     fixed.SetSpacing(spacing)
     moving = sitk.GetImageFromArray(moving_np.astype(np.float32))
     moving.SetSpacing(spacing)
 
-    reg = sitk.ImageRegistrationMethod()
-    reg.SetMetricAsMattesMutualInformation(numberOfHistogramBins=50)
-    reg.SetMetricSamplingStrategy(reg.RANDOM)
-    reg.SetMetricSamplingPercentage(0.2)
-    reg.SetInterpolator(sitk.sitkLinear)
-    reg.SetOptimizerAsGradientDescent(
-        learningRate=1.0, numberOfIterations=200,
-        convergenceMinimumValue=1e-6, convergenceWindowSize=10,
-    )
-    reg.SetOptimizerScalesFromPhysicalShift()
-
+    # Pre-align by centre of mass — prevents "images do not overlap" error
     initial_tf = sitk.CenteredTransformInitializer(
         fixed, moving,
         sitk.Euler3DTransform(),
-        sitk.CenteredTransformInitializerFilter.GEOMETRY,
+        sitk.CenteredTransformInitializerFilter.MOMENTS,
     )
+
+    reg = sitk.ImageRegistrationMethod()
+    reg.SetMetricAsMattesMutualInformation(numberOfHistogramBins=50)
+    reg.SetMetricSamplingStrategy(reg.RANDOM)
+    reg.SetMetricSamplingPercentage(0.1)
+    reg.SetInterpolator(sitk.sitkLinear)
+    reg.SetOptimizerAsGradientDescent(
+        learningRate=1.0, numberOfIterations=100,
+        convergenceMinimumValue=1e-6, convergenceWindowSize=10,
+    )
+    reg.SetOptimizerScalesFromPhysicalShift()
     reg.SetInitialTransform(initial_tf, inPlace=False)
 
     transform = reg.Execute(
-        sitk.Cast(fixed, sitk.sitkFloat32),
+        sitk.Cast(fixed,  sitk.sitkFloat32),
         sitk.Cast(moving, sitk.sitkFloat32),
     )
 
