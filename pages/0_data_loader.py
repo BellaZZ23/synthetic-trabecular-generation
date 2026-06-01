@@ -604,6 +604,8 @@ if volume is not None:
             disabled=not reg_ready,
             key="btn_register",
         ):
+            st.caption(f"Fixed dtype={volume.dtype} shape={volume.shape} | "
+                       f"Moving dtype={moving_volume.dtype} shape={moving_volume.shape}")
             with st.spinner("Registering volumes (SimpleITK MI + gradient descent)..."):
                 try:
                     registered_vol, transform = register_volumes_rigid(
