@@ -58,25 +58,32 @@ st.caption("Load real micro-CT volumes for parameter extraction or validation")
 def register_volumes_rigid(fixed_np: np.ndarray, moving_np: np.ndarray,
                             voxel_um: float = 39.0) -> tuple:
     """
-    Rigid-body (6 DOF) registration using SimpleITK Mattes mutual
-    information + gradient descent.
+    Rigid-body registration using SimpleITK Mattes mutual information.
 
-    Fixes vs v1:
-      - Casts to float32 before passing to SimpleITK (uint8 causes overlap issues)
-      - Uses CenteredTransformInitializer with MOMENTS so images are pre-aligned
-        by centre of mass before optimisation — prevents overlap errors
-      - Reduced sampling percentage for speed on large volumes
+    Key: both images are given identical origin (0,0,0) and identity
+    direction cosines so SimpleITK places them in the same physical space
+    before the centre-of-mass initialiser runs. Without this the
+    "all samples outside buffer" error fires even for identical volumes.
     """
     import SimpleITK as sitk
 
     spacing = [voxel_um * 1e-3] * 3  # mm
+    origin    = [0.0, 0.0, 0.0]
+    direction = [1.0, 0.0, 0.0,
+                 0.0, 1.0, 0.0,
+                 0.0, 0.0, 1.0]
 
-    fixed  = sitk.GetImageFromArray(fixed_np.astype(np.float32))
-    fixed.SetSpacing(spacing)
-    moving = sitk.GetImageFromArray(moving_np.astype(np.float32))
-    moving.SetSpacing(spacing)
+    def make_sitk(arr):
+        img = sitk.GetImageFromArray(arr.astype(np.float32))
+        img.SetSpacing(spacing)
+        img.SetOrigin(origin)
+        img.SetDirection(direction)
+        return img
 
-    # Pre-align by centre of mass — prevents "images do not overlap" error
+    fixed  = make_sitk(fixed_np)
+    moving = make_sitk(moving_np)
+
+    # Centre-of-mass pre-alignment
     initial_tf = sitk.CenteredTransformInitializer(
         fixed, moving,
         sitk.Euler3DTransform(),
