@@ -58,25 +58,22 @@ st.caption("Load real micro-CT volumes for parameter extraction or validation")
 def register_volumes_rigid(fixed_np: np.ndarray, moving_np: np.ndarray,
                             voxel_um: float = 39.0) -> tuple:
     """
-    Translational registration using SimpleITK Mattes mutual information.
+    Register moving volume into fixed space.
 
-    Uses TranslationTransform(3) rather than Euler3DTransform because
-    these volumes are very thin in Z (typically 10-15 slices at 50um =
-    0.5mm) but large in X/Y (~60mm). Euler rotations swing the thin Z
-    axis outside the image bounds during optimisation, causing the
-    "all samples outside buffer" ITK error. Translation-only is correct
-    for DVC pre-registration and avoids this entirely.
+    Uses phase-correlation to estimate XY translation (robust, no
+    overlap requirement), then applies it via SimpleITK resampling.
+    Falls back to identity if volumes are identical (same-file demo case).
 
-    Both images are anchored to origin (0,0,0) with identity direction
-    cosines so SimpleITK places them in the same physical space.
+    Returns (registered_np, transform) where transform is a SimpleITK
+    TranslationTransform for use with apply_transform_to_field().
     """
     import SimpleITK as sitk
+    from scipy.ndimage import fourier_shift
+    from numpy.fft import fftn, ifftn, fftshift
 
-    spacing   = [voxel_um * 1e-3] * 3
-    origin    = [0.0, 0.0, 0.0]
-    direction = [1.0, 0.0, 0.0,
-                 0.0, 1.0, 0.0,
-                 0.0, 0.0, 1.0]
+    spacing  = [voxel_um * 1e-3] * 3
+    origin   = [0.0, 0.0, 0.0]
+    direction = [1.0,0.0,0.0, 0.0,1.0,0.0, 0.0,0.0,1.0]
 
     def make_sitk(arr):
         img = sitk.GetImageFromArray(arr.astype(np.float32))
@@ -85,31 +82,43 @@ def register_volumes_rigid(fixed_np: np.ndarray, moving_np: np.ndarray,
         img.SetDirection(direction)
         return img
 
-    fixed  = make_sitk(fixed_np)
-    moving = make_sitk(moving_np)
+    # ── Fast path: identical arrays → identity transform ──────
+    if fixed_np.shape == moving_np.shape and np.array_equal(fixed_np, moving_np):
+        transform = sitk.TranslationTransform(3)
+        transform.SetOffset([0.0, 0.0, 0.0])
+        registered_np = fixed_np.astype(np.float32)
+        return registered_np, transform
 
-    reg = sitk.ImageRegistrationMethod()
-    reg.SetMetricAsMattesMutualInformation(numberOfHistogramBins=32)
-    reg.SetMetricSamplingStrategy(reg.RANDOM)
-    reg.SetMetricSamplingPercentage(0.05)
-    reg.SetInterpolator(sitk.sitkLinear)
-    reg.SetOptimizerAsGradientDescent(
-        learningRate=1.0, numberOfIterations=100,
-        convergenceMinimumValue=1e-6, convergenceWindowSize=10,
-    )
-    reg.SetOptimizerScalesFromPhysicalShift()
+    # ── Phase-correlation translation estimate ─────────────────
+    # Project to 2D (max-intensity along Z) for robust estimation
+    f_proj = fixed_np.max(axis=0).astype(np.float32)
+    m_proj = moving_np.max(axis=0).astype(np.float32)
 
-    init_tf = sitk.TranslationTransform(3)
-    reg.SetInitialTransform(init_tf, inPlace=False)
+    F = fftn(f_proj)
+    M = fftn(m_proj)
+    cross = F * np.conj(M)
+    denom = np.abs(cross) + 1e-8
+    phase = cross / denom
+    response = np.abs(fftshift(ifftn(phase)))
+    peak = np.unravel_index(response.argmax(), response.shape)
+    cy, cx = response.shape[0] // 2, response.shape[1] // 2
+    dy_vox = peak[0] - cy   # shift in voxels (Y)
+    dx_vox = peak[1] - cx   # shift in voxels (X)
 
-    transform = reg.Execute(
-        sitk.Cast(fixed,  sitk.sitkFloat32),
-        sitk.Cast(moving, sitk.sitkFloat32),
-    )
+    # Convert voxel shift to mm
+    dy_mm = float(dy_vox) * voxel_um * 1e-3
+    dx_mm = float(dx_vox) * voxel_um * 1e-3
+
+    # ── Apply via SimpleITK TranslationTransform ───────────────
+    transform = sitk.TranslationTransform(3)
+    transform.SetOffset([dx_mm, dy_mm, 0.0])
+
+    fixed_sitk  = make_sitk(fixed_np)
+    moving_sitk = make_sitk(moving_np)
 
     resampled = sitk.Resample(
-        moving, fixed, transform,
-        sitk.sitkLinear, 0.0, moving.GetPixelID(),
+        moving_sitk, fixed_sitk, transform,
+        sitk.sitkLinear, 0.0, moving_sitk.GetPixelID(),
     )
     registered_np = sitk.GetArrayFromImage(resampled).astype(np.float32)
     return registered_np, transform
