@@ -58,16 +58,21 @@ st.caption("Load real micro-CT volumes for parameter extraction or validation")
 def register_volumes_rigid(fixed_np: np.ndarray, moving_np: np.ndarray,
                             voxel_um: float = 39.0) -> tuple:
     """
-    Rigid-body registration using SimpleITK Mattes mutual information.
+    Translational registration using SimpleITK Mattes mutual information.
 
-    Key: both images are given identical origin (0,0,0) and identity
-    direction cosines so SimpleITK places them in the same physical space
-    before the centre-of-mass initialiser runs. Without this the
-    "all samples outside buffer" error fires even for identical volumes.
+    Uses TranslationTransform(3) rather than Euler3DTransform because
+    these volumes are very thin in Z (typically 10-15 slices at 50um =
+    0.5mm) but large in X/Y (~60mm). Euler rotations swing the thin Z
+    axis outside the image bounds during optimisation, causing the
+    "all samples outside buffer" ITK error. Translation-only is correct
+    for DVC pre-registration and avoids this entirely.
+
+    Both images are anchored to origin (0,0,0) with identity direction
+    cosines so SimpleITK places them in the same physical space.
     """
     import SimpleITK as sitk
 
-    spacing = [voxel_um * 1e-3] * 3  # mm
+    spacing   = [voxel_um * 1e-3] * 3
     origin    = [0.0, 0.0, 0.0]
     direction = [1.0, 0.0, 0.0,
                  0.0, 1.0, 0.0,
@@ -83,24 +88,19 @@ def register_volumes_rigid(fixed_np: np.ndarray, moving_np: np.ndarray,
     fixed  = make_sitk(fixed_np)
     moving = make_sitk(moving_np)
 
-    # Centre-of-mass pre-alignment
-    initial_tf = sitk.CenteredTransformInitializer(
-        fixed, moving,
-        sitk.Euler3DTransform(),
-        sitk.CenteredTransformInitializerFilter.MOMENTS,
-    )
-
     reg = sitk.ImageRegistrationMethod()
-    reg.SetMetricAsMattesMutualInformation(numberOfHistogramBins=50)
+    reg.SetMetricAsMattesMutualInformation(numberOfHistogramBins=32)
     reg.SetMetricSamplingStrategy(reg.RANDOM)
-    reg.SetMetricSamplingPercentage(0.1)
+    reg.SetMetricSamplingPercentage(0.05)
     reg.SetInterpolator(sitk.sitkLinear)
     reg.SetOptimizerAsGradientDescent(
         learningRate=1.0, numberOfIterations=100,
         convergenceMinimumValue=1e-6, convergenceWindowSize=10,
     )
     reg.SetOptimizerScalesFromPhysicalShift()
-    reg.SetInitialTransform(initial_tf, inPlace=False)
+
+    init_tf = sitk.TranslationTransform(3)
+    reg.SetInitialTransform(init_tf, inPlace=False)
 
     transform = reg.Execute(
         sitk.Cast(fixed,  sitk.sitkFloat32),
