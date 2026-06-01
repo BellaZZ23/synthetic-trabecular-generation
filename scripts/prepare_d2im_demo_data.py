@@ -2,19 +2,24 @@
 prepare_d2im_demo_data.py
 =========================
 Run this script ONCE locally before the demo.
-It reads the D2IM Figshare data from your repo, and writes
-three ready-to-use .npy files into data/strain/processed/:
 
-  reference_scan.npy      — uint8 grayscale volume  (Z, Y, X)
-  bone_mask.npy           — uint8 binary mask        (Z, Y, X)
-  displacement_magnitude.npy — float32 |U,V,W| field (Z, Y, X)
+Fixes applied vs v1:
+  - Scan and Mask are now matched by slice index suffix (_NNNN) so only
+    the overlapping slices are kept — no more shape mismatch.
+  - Target/U/V/W TIFFs are tiny DVC grid files (not full-res volumes).
+    They are read correctly as float32 2-D grids per load step, then the
+    LAST load step (maximum deformation) is upsampled to match the scan
+    spatial dimensions to produce a usable displacement magnitude map.
+
+Outputs written to  data/strain/processed/ :
+  reference_scan_<spec>.npy          uint8  (Z, Y, X)
+  bone_mask_<spec>.npy               uint8  (Z, Y, X)
+  displacement_magnitude_<spec>.npy  float32 (Z, Y, X)  — upsampled DVC grid
+  disp_U/V/W_<spec>.npy              float32 raw DVC grids, last load step
 
 Usage
 -----
-  cd C:/Users/Isabella/OneDrive - zeki/Documents/Research/synthetic_trabeculae
-  python scripts/prepare_d2im_demo_data.py
-
-  # or specify a specimen explicitly:
+  cd "C:/Users/Isabella/OneDrive - zeki/Documents/Research/synthetic_trabeculae"
   python scripts/prepare_d2im_demo_data.py --specimen S9_INT_UL_AP_50
 """
 
@@ -22,182 +27,191 @@ import argparse
 import numpy as np
 from pathlib import Path
 from PIL import Image
+from scipy.ndimage import zoom
 
 
-# ── Config ────────────────────────────────────────────────────
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_ROOT = REPO_ROOT / "data" / "strain" / "D2IM_Data"
-
-SCAN_DIR   = DATA_ROOT / "Input" / "Scan"
-MASK_DIR   = DATA_ROOT / "Input" / "Mask"
-U_DIR      = DATA_ROOT / "Target" / "U"
-V_DIR      = DATA_ROOT / "Target" / "V"
-W_DIR      = DATA_ROOT / "Target" / "W"
-
-OUT_DIR    = REPO_ROOT / "data" / "strain" / "processed"
+SCAN_DIR  = DATA_ROOT / "Input"  / "Scan"
+MASK_DIR  = DATA_ROOT / "Input"  / "Mask"
+U_DIR     = DATA_ROOT / "Target" / "U"
+V_DIR     = DATA_ROOT / "Target" / "V"
+W_DIR     = DATA_ROOT / "Target" / "W"
+OUT_DIR   = REPO_ROOT / "data"   / "strain" / "processed"
 
 
-# ── Helpers ───────────────────────────────────────────────────
+# ── helpers ───────────────────────────────────────────────────
 
-def load_tiff_stack(folder: Path, specimen: str = None) -> np.ndarray:
-    """
-    Load all TIFFs in a folder as a (Z, Y, X) volume.
-    If specimen is given, only files whose name contains that string are loaded.
-    Handles both single-frame and multi-frame TIFFs.
-    """
-    pattern = f"*{specimen}*" if specimen else "*.tif*"
-    files = sorted(folder.glob(pattern))
-    if not files:
-        # Try one level deeper — some D2IM folders have per-specimen subfolders
-        subdirs = [d for d in folder.iterdir() if d.is_dir()]
-        if subdirs:
-            # Pick the first matching subfolder
-            for sd in subdirs:
-                if specimen and specimen.lower() not in sd.name.lower():
-                    continue
-                files = sorted(sd.glob("*.tif*"))
-                if files:
-                    print(f"  Found {len(files)} files in subfolder: {sd.name}")
-                    break
-
+def get_specimen_files(folder: Path, specimen: str):
+    """Return sorted files whose name starts with specimen."""
+    files = sorted(
+        [f for f in folder.glob("*.tif*") if f.name.startswith(specimen)],
+        key=lambda f: int(f.stem.split("_")[-1]),
+    )
     if not files:
         raise FileNotFoundError(
-            f"No TIFF files found in {folder} "
-            f"(specimen filter: {specimen or 'none'})\n"
-            f"Contents: {list(folder.iterdir())[:10]}"
+            f"No files for '{specimen}' in {folder}\n"
+            f"Available: {[f.name for f in folder.glob('*.tif*')][:8]}"
+        )
+    return files
+
+
+def get_slice_index(path: Path) -> int:
+    return int(path.stem.split("_")[-1])
+
+
+def load_matched_stack(scan_files, mask_files):
+    """
+    Keep only slices whose index exists in BOTH scan and mask.
+    Returns (scan_vol uint8, mask_vol uint8).
+    """
+    scan_idx  = {get_slice_index(f): f for f in scan_files}
+    mask_idx  = {get_slice_index(f): f for f in mask_files}
+    common    = sorted(set(scan_idx) & set(mask_idx))
+
+    if not common:
+        raise ValueError(
+            f"No overlapping slice indices between scan {sorted(scan_idx)} "
+            f"and mask {sorted(mask_idx)}"
         )
 
-    slices = []
-    for f in files:
-        img = Image.open(f)
-        n_frames = getattr(img, "n_frames", 1)
-        if n_frames > 1:
-            for i in range(n_frames):
-                img.seek(i)
-                slices.append(np.array(img))
-        else:
-            slices.append(np.array(img))
+    print(f"  Scan slices : {sorted(scan_idx.keys())}")
+    print(f"  Mask slices : {sorted(mask_idx.keys())}")
+    print(f"  Common      : {common}  ({len(common)} slices)")
 
-    vol = np.stack(slices, axis=0)
-    print(f"  Loaded {len(files)} file(s) → shape {vol.shape}, dtype {vol.dtype}")
-    return vol
+    scan_vol = np.stack([np.array(Image.open(scan_idx[i])) for i in common], axis=0)
+    mask_vol = np.stack([np.array(Image.open(mask_idx[i])) for i in common], axis=0)
+    return scan_vol, mask_vol
 
 
 def normalise_uint8(vol: np.ndarray) -> np.ndarray:
-    """Percentile-clip and rescale any dtype to uint8."""
     if vol.dtype == np.uint8:
         return vol
     vmin, vmax = np.percentile(vol, 0.5), np.percentile(vol, 99.5)
     if vmax > vmin:
-        clipped = np.clip(vol.astype(np.float32), vmin, vmax)
-        return ((clipped - vmin) / (vmax - vmin) * 255).astype(np.uint8)
+        return ((np.clip(vol.astype(np.float32), vmin, vmax) - vmin)
+                / (vmax - vmin) * 255).astype(np.uint8)
     return np.zeros_like(vol, dtype=np.uint8)
 
 
-def load_displacement_components(u_dir, v_dir, w_dir,
-                                  specimen=None) -> tuple:
-    """Load U, V, W displacement component stacks."""
-    print("Loading U...")
-    U = load_tiff_stack(u_dir, specimen).astype(np.float32)
-    print("Loading V...")
-    V = load_tiff_stack(v_dir, specimen).astype(np.float32)
-    print("Loading W...")
-    W = load_tiff_stack(w_dir, specimen).astype(np.float32)
-    return U, V, W
+def load_dvc_grid(files):
+    """
+    Load DVC displacement grid TIFFs.
+    Each file = one load step = one 2-D float32 grid (rows × cols).
+    Returns array of shape (n_steps, rows, cols).
+    """
+    grids = []
+    for f in files:
+        arr = np.array(Image.open(f), dtype=np.float32)
+        grids.append(arr)
+    return np.stack(grids, axis=0)          # (steps, rows, cols)
 
 
-def compute_displacement_magnitude(U, V, W) -> np.ndarray:
-    """Compute voxel-wise displacement magnitude |d| = sqrt(U²+V²+W²)."""
-    return np.sqrt(U**2 + V**2 + W**2).astype(np.float32)
+def upsample_to_volume(grid_2d: np.ndarray,
+                        target_shape: tuple) -> np.ndarray:
+    """
+    Upsample a 2-D DVC grid (rows, cols) to a 3-D volume (Z, Y, X)
+    by tiling along Z then zooming spatially.
+    The DVC grid represents a single mid-plane summary of the field.
+    """
+    nz, ny, nx = target_shape
+    gr, gc = grid_2d.shape
+
+    # Zoom the 2-D grid to match (ny, nx)
+    zy = ny / gr
+    zx = nx / gc
+    grid_full = zoom(grid_2d, (zy, zx), order=1)      # (ny, nx)
+
+    # Tile to 3-D: same field replicated across all z-slices
+    vol = np.broadcast_to(grid_full[np.newaxis], (nz, ny, nx)).copy()
+    return vol.astype(np.float32)
 
 
-# ── Main ──────────────────────────────────────────────────────
+# ── main ──────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Prepare D2IM demo data")
-    parser.add_argument(
-        "--specimen", type=str, default=None,
-        help="Specimen name filter, e.g. S9_INT_UL_AP_50. "
-             "Leave blank to use all files in each folder.",
-    )
-    parser.add_argument(
-        "--skip-scan", action="store_true",
-        help="Skip loading the scan (use if Input/Scan is missing).",
-    )
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--specimen", default="S9_INT_UL_AP_50",
+                        help="Specimen prefix, e.g. S9_INT_UL_AP_50")
     args = parser.parse_args()
-
+    spec = args.specimen
+    tag  = f"_{spec}"
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    specimen = args.specimen
-    tag = f"_{specimen}" if specimen else ""
 
-    print(f"\nD2IM data root : {DATA_ROOT}")
-    print(f"Output dir     : {OUT_DIR}")
-    print(f"Specimen filter: {specimen or 'all'}\n")
+    print(f"\nD2IM root  : {DATA_ROOT}")
+    print(f"Output dir : {OUT_DIR}")
+    print(f"Specimen   : {spec}\n")
 
-    # ── 1. Reference scan ──────────────────────────────────────
-    if not args.skip_scan:
-        print("── Loading reference scan (Input/Scan) ──")
-        scan = normalise_uint8(load_tiff_stack(SCAN_DIR, specimen))
-        out_scan = OUT_DIR / f"reference_scan{tag}.npy"
-        np.save(out_scan, scan)
-        print(f"  Saved → {out_scan}\n")
-    else:
-        print("  Skipping scan.\n")
+    # ── 1. Scan + mask (matched by slice index) ───────────────
+    print("── Matching scan and mask slices ──")
+    scan_files = get_specimen_files(SCAN_DIR, spec)
+    mask_files = get_specimen_files(MASK_DIR, spec)
+    scan_vol, mask_raw = load_matched_stack(scan_files, mask_files)
 
-    # ── 2. Bone mask ───────────────────────────────────────────
-    print("── Loading bone mask (Input/Mask) ──")
-    mask_raw = load_tiff_stack(MASK_DIR, specimen)
-    # Binarise: D2IM masks may be 0/255 or 0/1
-    if mask_raw.max() > 1:
-        mask = (mask_raw > 127).astype(np.uint8)
-    else:
-        mask = mask_raw.astype(np.uint8)
-    out_mask = OUT_DIR / f"bone_mask{tag}.npy"
-    np.save(out_mask, mask)
-    bvtv = mask.mean()
-    print(f"  BV/TV = {bvtv:.3f}")
-    print(f"  Saved → {out_mask}\n")
+    scan_vol = normalise_uint8(scan_vol)
+    mask_vol = (mask_raw > 127).astype(np.uint8) if mask_raw.max() > 1 else mask_raw.astype(np.uint8)
 
-    # ── 3. Displacement magnitude ─────────────────────────────
-    print("── Loading displacement components (Target/U, V, W) ──")
-    U, V, W = load_displacement_components(U_DIR, V_DIR, W_DIR, specimen)
+    nz, ny, nx = scan_vol.shape
+    print(f"  Final volume shape : {scan_vol.shape}  BV/TV={mask_vol.mean():.3f}")
 
-    # Sanity check shapes match
-    shapes = {U.shape, V.shape, W.shape}
-    if len(shapes) > 1:
-        print(f"  WARNING: U/V/W shapes differ: {U.shape}, {V.shape}, {W.shape}")
-        print("  Cropping to smallest common shape...")
-        min_shape = tuple(min(s[i] for s in [U.shape, V.shape, W.shape]) for i in range(3))
-        U = U[:min_shape[0], :min_shape[1], :min_shape[2]]
-        V = V[:min_shape[0], :min_shape[1], :min_shape[2]]
-        W = W[:min_shape[0], :min_shape[1], :min_shape[2]]
+    np.save(OUT_DIR / f"reference_scan{tag}.npy",  scan_vol)
+    np.save(OUT_DIR / f"bone_mask{tag}.npy",        mask_vol)
+    print(f"  Saved scan  → reference_scan{tag}.npy")
+    print(f"  Saved mask  → bone_mask{tag}.npy\n")
 
-    mag = compute_displacement_magnitude(U, V, W)
-    out_mag = OUT_DIR / f"displacement_magnitude{tag}.npy"
-    np.save(out_mag, mag)
-    print(f"  Magnitude range: [{mag.min():.4f}, {mag.max():.4f}]")
-    print(f"  Saved → {out_mag}\n")
+    # ── 2. DVC displacement grids ─────────────────────────────
+    print("── Loading DVC displacement grids (Target/U, V, W) ──")
+    u_files = get_specimen_files(U_DIR, spec)
+    v_files = get_specimen_files(V_DIR, spec)
+    w_files = get_specimen_files(W_DIR, spec)
 
-    # ── 4. Also save individual components ───────────────────
-    for arr, name in [(U, "disp_U"), (V, "disp_V"), (W, "disp_W")]:
-        out = OUT_DIR / f"{name}{tag}.npy"
-        np.save(out, arr)
-        print(f"  Saved component → {out}")
+    U_steps = load_dvc_grid(u_files)   # (n_steps, rows, cols)
+    V_steps = load_dvc_grid(v_files)
+    W_steps = load_dvc_grid(w_files)
+
+    n_steps = U_steps.shape[0]
+    print(f"  Load steps : {n_steps}")
+    print(f"  Grid shape : {U_steps.shape[1:]}  (DVC spatial grid per step)")
+
+    # Use the LAST load step = maximum deformation
+    U_last = U_steps[-1]
+    V_last = V_steps[-1]
+    W_last = W_steps[-1]
+
+    mag_last = np.sqrt(U_last**2 + V_last**2 + W_last**2)
+    print(f"  Displacement magnitude (last step): "
+          f"min={np.nanmin(mag_last):.4f}  max={np.nanmax(mag_last):.4f}")
+
+    # Upsample to scan spatial dimensions
+    print(f"  Upsampling DVC grid {U_last.shape} → volume {(nz, ny, nx)} ...")
+    mag_vol = upsample_to_volume(mag_last, (nz, ny, nx))
+    U_vol   = upsample_to_volume(U_last,   (nz, ny, nx))
+    V_vol   = upsample_to_volume(V_last,   (nz, ny, nx))
+    W_vol   = upsample_to_volume(W_last,   (nz, ny, nx))
+
+    np.save(OUT_DIR / f"displacement_magnitude{tag}.npy", mag_vol)
+    np.save(OUT_DIR / f"disp_U{tag}.npy", U_vol)
+    np.save(OUT_DIR / f"disp_V{tag}.npy", V_vol)
+    np.save(OUT_DIR / f"disp_W{tag}.npy", W_vol)
+    print(f"  Saved → displacement_magnitude{tag}.npy  shape={mag_vol.shape}")
+    print(f"  Saved individual U/V/W components\n")
 
     # ── Summary ───────────────────────────────────────────────
-    print("\n── Ready for demo ──────────────────────────────────")
-    print("Load these files into the dashboard:")
-    print(f"  Reference scan   : data/strain/processed/reference_scan{tag}.npy")
-    print(f"  Bone mask        : data/strain/processed/bone_mask{tag}.npy")
-    print(f"  Displacement mag : data/strain/processed/displacement_magnitude{tag}.npy")
-    print("\nIn Data Loader:")
-    print("  1. File format      → NumPy (.npy)")
-    print("  2. Upload           → reference_scan.npy")
-    print("  3. Strain input     → Image + strain field")
-    print("  4. Strain field     → displacement_magnitude.npy")
+    print("── Ready for demo ──────────────────────────────────")
+    print(f"  reference_scan          : data/strain/processed/reference_scan{tag}.npy")
+    print(f"  bone_mask               : data/strain/processed/bone_mask{tag}.npy")
+    print(f"  displacement_magnitude  : data/strain/processed/displacement_magnitude{tag}.npy")
+    print()
+    print("In Data Loader:")
+    print("  1. File format   → NumPy (.npy)")
+    print("  2. Upload        → reference_scan.npy")
+    print("  3. Strain input  → Image + strain field")
+    print("  4. Strain field  → displacement_magnitude.npy")
     print("  5. Run registration → rigid-body")
-    print("\nIn 3D Viewer:")
-    print("  Strain overlay will appear once registration is complete.")
+    print()
+    print("Note: displacement_magnitude is upsampled from the DVC coarse grid.")
+    print("It shows the spatial pattern of deformation, not voxel-level precision.")
+    print("That is expected and sufficient for the demo.")
 
 
 if __name__ == "__main__":
