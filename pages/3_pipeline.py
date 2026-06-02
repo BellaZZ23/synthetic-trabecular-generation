@@ -1,17 +1,27 @@
 """
 Page 3: Integrated Pipeline
 ============================
-End-to-end workflow:
-  1. Generate synthetic bone volume + grayscale micro-CT
-  2. Run micro-FE to get mechanical fields (strain, displacement)
-  3. Load real mechanical data (DIC strain maps, FE exports)
-  4. Compare synthetic vs real — structural AND mechanical
+End-to-end workflow with four modes:
+
+  1. Synthetic         — generate → grayscale → FE → compare
+  2. D²IM data         — load processed D²IM .npy files → measure → generate
+                         matched synthetic → FE → compare vs displacement field
+  3. Augmented         — interpolate morphometrics between two DVC load steps
+                         to generate synthetic volumes at intermediate states
+  4. Compare           — side-by-side synthetic vs real mechanical fields
+
+Session state pushed:
+  pipeline_gray        → 3D viewer heterogeneous E
+  strain_volume_3d     → 3D viewer overlay
+  strain_registered    → marks field as co-registered
+  bone_volume          → FE solver + 3D viewer
 """
 import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
-import sys, io, tempfile, zipfile
+import sys, io, zipfile
 from pathlib import Path
+from scipy.stats import pearsonr
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "fe_coupling"))
 from step3_generator_fe_coupling import (
@@ -21,7 +31,12 @@ from step3_generator_fe_coupling import (
     run_fe_analysis,
 )
 
-# ── Try to import morphometric functions ──
+try:
+    from techmesh_solver import run_techmesh_analysis
+    HAS_TECHMESH = True
+except ImportError:
+    HAS_TECHMESH = False
+
 try:
     REPO_ROOT = Path(__file__).resolve().parent.parent
     sys.path.insert(0, str(REPO_ROOT / "scripts"))
@@ -34,17 +49,16 @@ st.set_page_config(page_title="Pipeline", page_icon="🔬", layout="wide")
 st.title("Integrated pipeline")
 st.caption("Generate → Analyse → Load → Compare")
 
+
 # ══════════════════════════════════════════════════════════════
 # HELPERS
 # ══════════════════════════════════════════════════════════════
 
 def strain_to_slice(values, centroids, nx, ny, voxel_mm, mid_z_mm):
-    """Map element-centroid strain values to a 2-D image at a given z."""
     out = np.full((nx, ny), np.nan)
     z_range = voxel_mm * 0.6
     for idx in range(len(values)):
-        cz = centroids[idx, 2]
-        if abs(cz - mid_z_mm) < z_range:
+        if abs(centroids[idx, 2] - mid_z_mm) < z_range:
             ci = int(round(centroids[idx, 0] / voxel_mm))
             cj = int(round(centroids[idx, 1] / voxel_mm))
             if 0 <= ci < nx and 0 <= cj < ny:
@@ -52,123 +66,176 @@ def strain_to_slice(values, centroids, nx, ny, voxel_mm, mid_z_mm):
     return out
 
 
-def disp_to_slice(mesh, values, nx, ny, voxel_mm, mid_z_idx):
-    """Map nodal displacement to a 2-D image at a given z-slice."""
-    out = np.full((nx, ny), np.nan)
-    tol = voxel_mm * 0.1
-    for n_idx in range(mesh.nvertices):
-        x, y, z = mesh.p[:, n_idx]
-        if abs(z - mid_z_idx * voxel_mm) < tol or abs(z - (mid_z_idx + 1) * voxel_mm) < tol:
-            i = int(round(x / voxel_mm))
-            j = int(round(y / voxel_mm))
-            if 0 <= i < nx and 0 <= j < ny:
-                if np.isnan(out[i, j]):
-                    out[i, j] = values[n_idx]
-    return out
+def strain_vol_from_fe(fe, bone_mask, voxel_mm, component='eps_von_mises'):
+    strain = fe["strain_field"]
+    centroids = strain["centroids"]
+    values = strain[component]
+    nz, ny, nx = bone_mask.shape
+    vol = np.full((nz, ny, nx), np.nan, dtype=float)
+    for idx in range(len(values)):
+        ci = int(round(centroids[idx, 0] / voxel_mm))
+        cj = int(round(centroids[idx, 1] / voxel_mm))
+        ck = int(round(centroids[idx, 2] / voxel_mm))
+        if 0 <= ci < nx and 0 <= cj < ny and 0 <= ck < nz:
+            vol[ck, cj, ci] = values[idx]
+    filled = vol.copy()
+    filled[np.isnan(filled)] = 0
+    return np.where(np.isnan(vol), filled, vol)
 
 
-def load_mechanical_tiffs(uploaded_files):
-    """Load strain/displacement TIFF stack as a volume."""
-    from PIL import Image
-    slices = []
-    for f in sorted(uploaded_files, key=lambda x: x.name):
-        img = Image.open(f)
-        n_frames = getattr(img, 'n_frames', 1)
-        if n_frames > 1:
-            for i in range(n_frames):
-                img.seek(i)
-                slices.append(np.array(img, dtype=np.float64))
-        else:
-            slices.append(np.array(img, dtype=np.float64))
-    return np.stack(slices, axis=0)
+def mechanical_awareness_score(fe, bone_mask):
+    """
+    Scalar score combining structural and mechanical properties.
+    Score = (E_apparent / Voigt_bound) * LCC_fraction
+    Range 0-1. Higher = more mechanically coherent structure.
+    """
+    try:
+        from skimage.measure import label
+        labeled = label(bone_mask)
+        counts = np.bincount(labeled.ravel())
+        lcc = counts[1:].max() / bone_mask.sum() if bone_mask.sum() > 0 else 0
+    except Exception:
+        lcc = 1.0
+
+    if fe.get("apparent_modulus") and fe.get("voigt_bound", 0) > 0:
+        modulus_ratio = min(fe["apparent_modulus"] / fe["voigt_bound"], 1.0)
+    else:
+        modulus_ratio = 0.5
+
+    return float(modulus_ratio * lcc)
 
 
-def load_mechanical_npy(uploaded_file):
-    """Load a .npy mechanical field."""
-    return np.load(io.BytesIO(uploaded_file.read()))
+def run_fe(bone_mask, voxel_mm, load_type, E_bone, nu,
+           applied_strain, grayscale=None, use_techmesh=False):
+    """Run FE with either TechMesh or voxel solver."""
+    if use_techmesh and HAS_TECHMESH:
+        return run_techmesh_analysis(
+            bone_mask, voxel_mm,
+            load_type=load_type, E_bone=E_bone, nu=nu,
+            applied_strain=applied_strain,
+            grayscale=grayscale,
+            verbose=False,
+        )
+    return run_fe_analysis(
+        bone_mask, voxel_mm,
+        load_type=load_type, E_bone=E_bone,
+        applied_strain=applied_strain, verbose=False,
+    )
 
 
-def load_mechanical_zip(uploaded_file):
-    """Load a ZIP of TIFF strain maps."""
-    from PIL import Image
-    slices = []
-    with zipfile.ZipFile(io.BytesIO(uploaded_file.read())) as zf:
-        tiff_names = sorted([
-            n for n in zf.namelist()
-            if n.lower().endswith(('.tif', '.tiff')) and not n.startswith('__')
-        ])
-        for name in tiff_names:
-            with zf.open(name) as f:
-                img = Image.open(f)
-                slices.append(np.array(img, dtype=np.float64))
-    return np.stack(slices, axis=0)
+def compare_fields(syn_field, real_field):
+    """Compute Pearson r and RMSE between two flat arrays."""
+    s = syn_field.ravel()
+    r = real_field.ravel()
+    # Remove NaNs
+    valid = np.isfinite(s) & np.isfinite(r)
+    if valid.sum() < 10:
+        return None, None
+    try:
+        rval, _ = pearsonr(s[valid], r[valid])
+    except Exception:
+        rval = float('nan')
+    rmse = float(np.sqrt(np.mean((s[valid] - r[valid])**2)))
+    return float(rval), rmse
+
+
+def load_d2im_files(specimen: str, processed_dir: Path):
+    """Load pre-processed D²IM .npy files from data/strain/processed/."""
+    scan_f = processed_dir / f"reference_scan_{specimen}.npy"
+    mask_f = processed_dir / f"bone_mask_{specimen}.npy"
+    disp_f = processed_dir / f"displacement_magnitude_{specimen}.npy"
+
+    missing = [f.name for f in [scan_f, mask_f, disp_f] if not f.exists()]
+    if missing:
+        return None, None, None, missing
+
+    scan = np.load(scan_f)
+    mask = np.load(mask_f)
+    disp = np.load(disp_f)
+    disp = np.nan_to_num(disp, nan=0.0)
+    return scan, mask, disp, []
+
+
+# ══════════════════════════════════════════════════════════════
+# SIDEBAR — global settings
+# ══════════════════════════════════════════════════════════════
+
+st.sidebar.header("FE settings")
+p_load    = st.sidebar.selectbox("Load case", ["compression","tension","torque"])
+p_E       = st.sidebar.number_input("E_bone (MPa)", value=18000.0, step=1000.0)
+p_nu      = st.sidebar.number_input("Poisson ratio", value=0.3, step=0.05,
+                                     min_value=0.0, max_value=0.49)
+p_strain  = st.sidebar.number_input("Applied strain", value=0.01, step=0.005,
+                                     format="%.3f")
+if HAS_TECHMESH:
+    use_techmesh = st.sidebar.checkbox(
+        "Use TechMesh solver", value=True,
+        help="Tetrahedral FE via scikit-fem. Faster, supports heterogeneous E."
+    )
+    use_hetero = st.sidebar.checkbox(
+        "Heterogeneous E from grayscale", value=False,
+    ) if use_techmesh else False
+else:
+    use_techmesh = False
+    use_hetero   = False
+    st.sidebar.info("Install scikit-fem for TechMesh: pip install scikit-fem")
 
 
 # ══════════════════════════════════════════════════════════════
 # TABS
 # ══════════════════════════════════════════════════════════════
 
-tab_gen, tab_load, tab_compare = st.tabs([
-    "🔧 Generate & analyse",
-    "📁 Load mechanical data",
+tab_syn, tab_d2im, tab_aug, tab_compare = st.tabs([
+    "🔧 Synthetic pipeline",
+    "📁 D²IM pipeline",
+    "🔄 Augmented generation",
     "📊 Compare",
 ])
 
-# ──────────────────────────────────────────────────────────────
-# TAB 1 — GENERATE & ANALYSE
-# ──────────────────────────────────────────────────────────────
-with tab_gen:
-    st.subheader("Generate synthetic volume + FE analysis")
-    st.write("One-click pipeline: bone volume → grayscale micro-CT → mechanical fields.")
 
-    # Check for targets from data loader
-    real_targets = st.session_state.get("target_from_real", None)
+# ══════════════════════════════════════════════════════════════
+# TAB 1 — SYNTHETIC PIPELINE
+# ══════════════════════════════════════════════════════════════
+with tab_syn:
+    st.subheader("Generate synthetic volume + FE analysis")
+    st.write("One-click pipeline: bone volume → grayscale → FE → 3D viewer.")
+
+    real_targets = st.session_state.get("target_from_real")
     if real_targets:
         st.info(
-            f"📐 Using targets from data loader: BV/TV={real_targets['bvtv']:.3f}, "
+            f"📐 Targets from data loader: "
+            f"BV/TV={real_targets['bvtv']:.3f}, "
             f"Tb.Th={real_targets['tbth_um']:.0f} µm"
         )
-        def_bvtv = real_targets["bvtv"]
-        def_tbth = int(real_targets["tbth_um"])
+        def_bvtv  = real_targets["bvtv"]
+        def_tbth  = int(real_targets["tbth_um"])
         def_voxel = real_targets["voxel_um"]
     else:
-        def_bvtv = 0.33
-        def_tbth = 180
-        def_voxel = 39.0
+        def_bvtv, def_tbth, def_voxel = 0.33, 180, 39.0
 
-    # ── Parameters ──
     with st.expander("Generation parameters", expanded=True):
         pcol1, pcol2, pcol3 = st.columns(3)
         with pcol1:
             st.markdown("**Morphometric targets**")
-            p_bvtv = st.number_input("BV/TV", 0.05, 0.50, def_bvtv, 0.01, format="%.3f", key="p_bvtv")
-            p_tbth = st.number_input("Tb.Th target (µm)", 80, 300, def_tbth, 5, key="p_tbth")
+            p_bvtv      = st.number_input("BV/TV", 0.05, 0.50, def_bvtv, 0.01,
+                                           format="%.3f", key="p_bvtv")
+            p_tbth      = st.number_input("Tb.Th (µm)", 80, 300, def_tbth, 5, key="p_tbth")
             p_calibrate = st.checkbox("Calibrate Tb.Th", value=bool(real_targets), key="p_cal")
         with pcol2:
             st.markdown("**Volume geometry**")
-            p_nx = st.selectbox("XY size", [32, 48, 64, 96, 128], index=3, key="p_nx")
-            p_nz = st.selectbox("Z slices", [16, 24, 32, 40], index=2, key="p_nz")
+            p_nx    = st.selectbox("XY size", [32, 48, 64, 96, 128], index=3, key="p_nx")
+            p_nz    = st.selectbox("Z slices", [16, 24, 32, 40], index=2, key="p_nz")
             p_voxel = st.number_input("Voxel (µm)", value=def_voxel, step=1.0, key="p_voxel")
         with pcol3:
-            st.markdown("**Field & FE**")
+            st.markdown("**Generator**")
             p_sigma = st.slider("Base sigma", 1.0, 6.0, 2.5, 0.1, key="p_sigma")
             p_close = st.slider("Close iters", 0, 6, 3, 1, key="p_close")
-            p_load = st.selectbox("Load case", ["compression", "tension", "torque"], key="p_load")
-            p_E = st.number_input("E_bone (MPa)", value=18000.0, step=1000.0, key="p_E")
-            p_strain = st.number_input("Applied strain", value=0.01, step=0.005, format="%.3f", key="p_strain")
+            p_seed  = st.number_input("Seed", value=100, step=1, key="p_seed")
 
-    pcol_s1, pcol_s2 = st.columns(2)
-    with pcol_s1:
-        p_seed = st.number_input("Seed", value=100, step=1, key="p_seed")
-    with pcol_s2:
-        total = p_nx * p_nx * p_nz
-        st.metric("Total voxels", f"{total:,}")
-
-    # ── Run pipeline ──
-    if st.button("Run full pipeline", type="primary", width='stretch', key="btn_pipeline"):
+    if st.button("▶ Run full pipeline", type="primary",
+                 use_container_width=True, key="btn_syn_pipeline"):
         voxel_mm = p_voxel / 1000.0
 
-        # Step 1: Generate bone volume
         with st.spinner("Step 1/3 — Generating bone volume..."):
             if p_calibrate:
                 vol = generate_bone_volume_calibrated(
@@ -186,523 +253,661 @@ with tab_gen:
                 )
 
         bone_mask = vol["bone_mask"]
-        morph = vol["morphometrics"]
-        nz_v, ny_v, nx_v = bone_mask.shape
+        morph     = vol["morphometrics"]
 
-        # Step 2: Generate grayscale
-        with st.spinner("Step 2/3 — Generating grayscale micro-CT..."):
+        with st.spinner("Step 2/3 — Generating grayscale µCT..."):
             gray = generate_grayscale(bone_mask, seed=int(p_seed))
 
-        # Step 3: Run FE
+        grayscale_for_fe = gray if use_hetero else None
         with st.spinner(f"Step 3/3 — Running FE ({p_load})..."):
-            fe = run_fe_analysis(
-                bone_mask, voxel_mm,
-                load_type=p_load, E_bone=p_E,
-                applied_strain=p_strain, verbose=False,
-            )
+            fe = run_fe(bone_mask, voxel_mm, p_load, p_E, p_nu,
+                        p_strain, grayscale_for_fe, use_techmesh)
 
-        # Store everything
-        st.session_state["bone_volume"] = vol
-        st.session_state["pipeline_gray"] = gray
-        st.session_state["pipeline_fe"] = fe
+        # Store in session
+        st.session_state["bone_volume"]    = vol
+        st.session_state["pipeline_gray"]  = gray
+        st.session_state["pipeline_fe"]    = fe
+        st.session_state["pipeline_mask"]  = bone_mask
+        st.session_state["pipeline_voxel_mm"] = voxel_mm
 
+        # Push to 3D viewer
+        sv = strain_vol_from_fe(fe, bone_mask, voxel_mm, "eps_von_mises")
+        st.session_state["strain_volume_3d"]  = sv
+        st.session_state["strain_label_3d"]   = "von Mises strain"
+        st.session_state["strain_registered"] = True
+
+        # Mechanical awareness score
+        ma_score = mechanical_awareness_score(fe, bone_mask)
+        st.session_state["ma_score"] = ma_score
+
+        nz_v, ny_v, nx_v = bone_mask.shape
         st.success(
             f"Pipeline complete — {nx_v}×{ny_v}×{nz_v} | "
             f"BV/TV={morph['BVTV']:.3f} | "
-            f"{fe['n_elements']} elements | "
-            f"{fe['solve_time']:.1f}s"
+            f"{fe['n_elements']:,} elements | "
+            f"{fe['solve_time']:.1f}s | "
+            f"solver: {fe.get('solver','voxel')}"
         )
 
     # ── Display results ──
     if "pipeline_fe" in st.session_state and "bone_volume" in st.session_state:
-        vol = st.session_state["bone_volume"]
-        gray = st.session_state.get("pipeline_gray")
-        fe = st.session_state["pipeline_fe"]
-        bone_mask = vol["bone_mask"]
-        morph = vol["morphometrics"]
-        nz_v, ny_v, nx_v = bone_mask.shape
-        voxel_mm = vol["voxel_um"] / 1000.0
-        strain = fe["strain_field"]
-        mesh = fe["mesh"]
-        ux, uy, uz = fe["displacement"]
+        vol      = st.session_state["bone_volume"]
+        gray     = st.session_state.get("pipeline_gray")
+        fe       = st.session_state["pipeline_fe"]
+        mask_p   = st.session_state.get("pipeline_mask", vol["bone_mask"])
+        voxel_mm = st.session_state.get("pipeline_voxel_mm", vol["voxel_um"]/1000.0)
+        morph    = vol["morphometrics"]
+        strain   = fe["strain_field"]
+        nz_v, ny_v, nx_v = mask_p.shape
 
-        # Morphometrics + FE summary
+        # Metrics row
         st.divider()
-        c1, c2, c3, c4, c5, c6 = st.columns(6)
-        c1.metric("BV/TV", f"{morph['BVTV']:.3f}")
-        c2.metric("Tb.Th", f"{morph['TbTh_um_p50']:.0f} µm")
-        c3.metric("Tb.N", f"{morph['TbN_per_mm']:.2f} /mm")
+        c1,c2,c3,c4,c5,c6 = st.columns(6)
+        c1.metric("BV/TV",    f"{morph['BVTV']:.3f}")
+        c2.metric("Tb.Th",    f"{morph['TbTh_um_p50']:.0f} µm")
+        c3.metric("Tb.N",     f"{morph['TbN_per_mm']:.2f} /mm")
         c4.metric("Elements", f"{fe['n_elements']:,}")
-        if fe["apparent_modulus"] is not None:
-            c5.metric("E_app", f"{fe['apparent_modulus']:.0f} MPa")
-            c6.metric("E/E_voigt", f"{fe['apparent_modulus']/fe['voigt_bound']:.3f}")
-        elif fe["apparent_shear_modulus"] is not None:
-            c5.metric("G_app", f"{fe['apparent_shear_modulus']:.0f} MPa")
-            c6.metric("Solve time", f"{fe['solve_time']:.1f}s")
+        if fe.get("apparent_modulus"):
+            c5.metric("E_apparent", f"{fe['apparent_modulus']:.0f} MPa")
+        ma = st.session_state.get("ma_score")
+        if ma is not None:
+            c6.metric("Mech. awareness", f"{ma:.3f}",
+                      help="E_apparent/Voigt × LCC. Higher = more coherent.")
 
         st.divider()
 
         # Slice viewer
-        mid_z = nz_v // 2
-        if nz_v > 1:
-            view_z = st.slider("Z-slice", 0, nz_v - 1, mid_z, key="pipe_z")
-        else:
-            view_z = 0
-        mid_z_mm = (view_z + 0.5) * voxel_mm
-        extent = [0, nx_v * voxel_mm, 0, ny_v * voxel_mm]
+        mid_z  = nz_v // 2
+        view_z = st.slider("Z-slice", 0, nz_v-1, mid_z, key="pipe_z")
+        mid_mm = (view_z + 0.5) * voxel_mm
+        extent = [0, nx_v*voxel_mm, 0, ny_v*voxel_mm]
 
-        # Row 1: Structure + grayscale
-        st.markdown("#### Structural views")
+        # Structure row
+        st.markdown("#### Structure")
         sc1, sc2, sc3 = st.columns(3)
-
         with sc1:
             st.caption("Binary mask")
-            fig, ax = plt.subplots(figsize=(5, 5))
-            ax.imshow(bone_mask[view_z].T, cmap='gray', origin='lower', extent=extent)
+            fig, ax = plt.subplots(figsize=(5,5))
+            ax.imshow(mask_p[view_z].T, cmap='gray', origin='lower', extent=extent)
             ax.set_xlabel("x [mm]"); ax.set_ylabel("y [mm]")
             st.pyplot(fig); plt.close()
-
         with sc2:
-            st.caption("Synthetic micro-CT")
-            fig, ax = plt.subplots(figsize=(5, 5))
-            ax.imshow(gray[view_z].T, cmap='gray', origin='lower', extent=extent, vmin=0, vmax=255)
-            ax.set_xlabel("x [mm]"); ax.set_ylabel("y [mm]")
-            st.pyplot(fig); plt.close()
-
+            st.caption("Synthetic µCT")
+            if gray is not None:
+                fig, ax = plt.subplots(figsize=(5,5))
+                ax.imshow(gray[view_z].T, cmap='gray', origin='lower',
+                          extent=extent, vmin=0, vmax=255)
+                ax.set_xlabel("x [mm]"); ax.set_ylabel("y [mm]")
+                st.pyplot(fig); plt.close()
         with sc3:
             st.caption("Max intensity projection")
-            fig, ax = plt.subplots(figsize=(5, 5))
-            ax.imshow(gray.max(axis=0).T, cmap='gray', origin='lower', extent=extent, vmin=0, vmax=255)
-            ax.set_xlabel("x [mm]"); ax.set_ylabel("y [mm]")
-            st.pyplot(fig); plt.close()
+            if gray is not None:
+                fig, ax = plt.subplots(figsize=(5,5))
+                ax.imshow(gray.max(axis=0).T, cmap='gray', origin='lower',
+                          extent=extent, vmin=0, vmax=255)
+                ax.set_xlabel("x [mm]"); ax.set_ylabel("y [mm]")
+                st.pyplot(fig); plt.close()
 
-        # Row 2: Mechanical fields
+        # Mechanical row
         st.markdown("#### Mechanical fields")
-        mc1, mc2, mc3, mc4 = st.columns(4)
-
+        mc1, mc2, mc3 = st.columns(3)
         with mc1:
-            st.caption("|u| displacement")
-            disp_mag = disp_to_slice(mesh, np.sqrt(ux**2 + uy**2 + uz**2), nx_v, ny_v, voxel_mm, view_z)
-            fig, ax = plt.subplots(figsize=(4, 4))
-            im = ax.imshow(disp_mag.T, cmap='hot', origin='lower', extent=extent)
-            ax.set_xlabel("x [mm]"); ax.set_ylabel("y [mm]")
-            plt.colorbar(im, ax=ax, fraction=0.046)
-            st.pyplot(fig); plt.close()
-
-        with mc2:
             st.caption("Axial strain (ε_zz)")
-            ezz = strain_to_slice(strain["eps_zz"], strain["centroids"], nx_v, ny_v, voxel_mm, mid_z_mm)
-            fig, ax = plt.subplots(figsize=(4, 4))
-            im = ax.imshow(ezz.T, cmap='RdBu_r', origin='lower', extent=extent)
+            fig, ax = plt.subplots(figsize=(4,4))
+            im = ax.imshow(
+                strain_to_slice(strain["eps_zz"], strain["centroids"],
+                                nx_v, ny_v, voxel_mm, mid_mm).T,
+                cmap='RdBu_r', origin='lower', extent=extent)
             ax.set_xlabel("x [mm]"); ax.set_ylabel("y [mm]")
             plt.colorbar(im, ax=ax, fraction=0.046)
             st.pyplot(fig); plt.close()
-
-        with mc3:
+        with mc2:
             st.caption("von Mises strain")
-            evm = strain_to_slice(strain["eps_von_mises"], strain["centroids"], nx_v, ny_v, voxel_mm, mid_z_mm)
-            fig, ax = plt.subplots(figsize=(4, 4))
-            im = ax.imshow(evm.T, cmap='inferno', origin='lower', extent=extent)
-            ax.set_xlabel("x [mm]"); ax.set_ylabel("y [mm]")
+            fig, ax = plt.subplots(figsize=(4,4))
+            im = ax.imshow(
+                strain_to_slice(strain["eps_von_mises"], strain["centroids"],
+                                nx_v, ny_v, voxel_mm, mid_mm).T,
+                cmap='inferno', origin='lower', extent=extent)
+            ax.set_xlabel("x [mm]")
             plt.colorbar(im, ax=ax, fraction=0.046)
             st.pyplot(fig); plt.close()
-
-        with mc4:
+        with mc3:
             st.caption("Max principal strain")
-            emp = strain_to_slice(strain["eps_max_principal"], strain["centroids"], nx_v, ny_v, voxel_mm, mid_z_mm)
-            fig, ax = plt.subplots(figsize=(4, 4))
-            im = ax.imshow(emp.T, cmap='magma', origin='lower', extent=extent)
-            ax.set_xlabel("x [mm]"); ax.set_ylabel("y [mm]")
+            fig, ax = plt.subplots(figsize=(4,4))
+            im = ax.imshow(
+                strain_to_slice(strain["eps_max_principal"], strain["centroids"],
+                                nx_v, ny_v, voxel_mm, mid_mm).T,
+                cmap='magma', origin='lower', extent=extent)
+            ax.set_xlabel("x [mm]")
             plt.colorbar(im, ax=ax, fraction=0.046)
             st.pyplot(fig); plt.close()
 
-        # Strain statistics
         with st.expander("Strain statistics"):
             scol1, scol2 = st.columns(2)
             with scol1:
-                st.json({
-                    "eps_zz range": [round(strain["eps_zz"].min(), 6), round(strain["eps_zz"].max(), 6)],
-                    "eps_xx range": [round(strain["eps_xx"].min(), 6), round(strain["eps_xx"].max(), 6)],
-                    "eps_yy range": [round(strain["eps_yy"].min(), 6), round(strain["eps_yy"].max(), 6)],
-                })
+                st.json({k: [round(float(strain[k].min()),6),
+                              round(float(strain[k].max()),6)]
+                         for k in ["eps_zz","eps_xx","eps_yy"]})
             with scol2:
-                st.json({
-                    "von Mises range": [round(strain["eps_von_mises"].min(), 6), round(strain["eps_von_mises"].max(), 6)],
-                    "max principal range": [round(strain["eps_max_principal"].min(), 6), round(strain["eps_max_principal"].max(), 6)],
-                    "shear eps_xy range": [round(strain["eps_xy"].min(), 6), round(strain["eps_xy"].max(), 6)],
-                })
-
-        # Strain distribution
-        with st.expander("Strain distributions"):
-            fig, axes = plt.subplots(1, 3, figsize=(15, 4))
-            axes[0].hist(strain["eps_zz"], bins=80, color='#378ADD', alpha=0.8, edgecolor='none', density=True)
-            axes[0].set_title("ε_zz"); axes[0].set_xlabel("Strain"); axes[0].set_ylabel("Density")
-            axes[1].hist(strain["eps_von_mises"], bins=80, color='#E85D3A', alpha=0.8, edgecolor='none', density=True)
-            axes[1].set_title("von Mises"); axes[1].set_xlabel("Strain")
-            axes[2].hist(strain["eps_max_principal"], bins=80, color='#7B2D8E', alpha=0.8, edgecolor='none', density=True)
-            axes[2].set_title("Max principal"); axes[2].set_xlabel("Strain")
-            plt.tight_layout()
-            st.pyplot(fig); plt.close()
+                st.json({k: [round(float(strain[k].min()),6),
+                              round(float(strain[k].max()),6)]
+                         for k in ["eps_von_mises","eps_max_principal","eps_xy"]})
 
 
-# ──────────────────────────────────────────────────────────────
-# TAB 2 — LOAD MECHANICAL DATA
-# ──────────────────────────────────────────────────────────────
-with tab_load:
-    st.subheader("Load real mechanical data")
+# ══════════════════════════════════════════════════════════════
+# TAB 2 — D²IM PIPELINE
+# ══════════════════════════════════════════════════════════════
+with tab_d2im:
+    st.subheader("D²IM data pipeline")
     st.write(
-        "Import strain or displacement fields from DIC, external FE software, "
-        "or experimental measurements for comparison against synthetic results."
+        "Load pre-processed D²IM data, measure morphometrics, generate matched "
+        "synthetic volume, run FE, then compare against the real displacement field."
     )
 
-    load_type = st.radio(
-        "Data type",
-        ["Strain field (ε)", "Displacement field (u)", "Full mechanical dataset (.npz)"],
-        key="mech_load_type",
-    )
+    PROCESSED_DIR = REPO_ROOT / "data" / "strain" / "processed"
 
-    mech_format = st.selectbox(
-        "File format",
-        ["TIFF stack", "TIFF stack (ZIP)", "NumPy (.npy)", "NumPy archive (.npz)"],
-        key="mech_format",
-    )
+    # ── Specimen selector ──
+    if PROCESSED_DIR.exists():
+        npy_files = sorted(PROCESSED_DIR.glob("reference_scan_*.npy"))
+        specimens = [f.stem.replace("reference_scan_", "") for f in npy_files]
+    else:
+        specimens = []
 
-    lcol1, lcol2 = st.columns(2)
-    with lcol1:
-        mech_voxel = st.number_input("Voxel size (µm)", value=39.0, step=1.0, key="mech_voxel")
-    with lcol2:
-        if load_type == "Strain field (ε)":
-            mech_component = st.selectbox(
-                "Strain component",
-                ["eps_zz (axial)", "eps_xx", "eps_yy", "eps_xy (shear)",
-                 "eps_von_mises", "eps_max_principal"],
-                key="mech_comp",
-            )
-        else:
-            mech_component = st.selectbox(
-                "Displacement component",
-                ["uz (axial)", "ux", "uy", "|u| (magnitude)"],
-                key="mech_comp_d",
-            )
-
-    mech_uploaded = None
-    if mech_format == "TIFF stack":
-        mech_uploaded = st.file_uploader(
-            "Upload mechanical field TIFFs", type=["tif", "tiff"],
-            accept_multiple_files=True, key="mech_tiff",
+    if not specimens:
+        st.warning(
+            f"No processed D²IM files found in `{PROCESSED_DIR}`. "
+            "Run `scripts/prepare_d2im_demo_data.py` first."
         )
-    elif mech_format == "TIFF stack (ZIP)":
-        mech_uploaded = st.file_uploader(
-            "Upload ZIP of TIFFs", type=["zip"], key="mech_zip",
-        )
-    elif mech_format == "NumPy (.npy)":
-        mech_uploaded = st.file_uploader(
-            "Upload .npy array", type=["npy"], key="mech_npy",
-            help="Shape: (Z, Y, X) — one component per file.",
-        )
-    elif mech_format == "NumPy archive (.npz)":
-        mech_uploaded = st.file_uploader(
-            "Upload .npz archive", type=["npz"], key="mech_npz",
-            help="Expected keys: eps_zz, eps_von_mises, etc. or ux, uy, uz.",
-        )
+    else:
+        d2im_specimen = st.selectbox("Specimen", specimens, key="d2im_spec")
+        voxel_d2im    = st.number_input("Voxel size (µm)", value=50.0, step=1.0,
+                                         key="d2im_voxel")
 
-    if mech_uploaded:
-        try:
-            with st.spinner("Loading mechanical data..."):
-                if mech_format == "TIFF stack" and len(mech_uploaded) > 0:
-                    mech_vol = load_mechanical_tiffs(mech_uploaded)
-                elif mech_format == "TIFF stack (ZIP)":
-                    mech_vol = load_mechanical_zip(mech_uploaded)
-                elif mech_format == "NumPy (.npy)":
-                    mech_vol = load_mechanical_npy(mech_uploaded)
-                elif mech_format == "NumPy archive (.npz)":
-                    npz_data = np.load(io.BytesIO(mech_uploaded.read()))
-                    mech_vol = None  # handled separately below
-
-            # ── Display loaded data ──
-            if mech_format == "NumPy archive (.npz)":
-                st.success(f"Loaded .npz with keys: {list(npz_data.keys())}")
-                st.session_state["real_mechanical_npz"] = dict(npz_data)
-
-                # Show each field
-                for key in npz_data.keys():
-                    arr = npz_data[key]
-                    if arr.ndim == 3:
-                        nz_m, ny_m, nx_m = arr.shape
-                        mid = nz_m // 2
-                        voxel_mm_m = mech_voxel / 1000.0
-
-                        st.markdown(f"**{key}** — shape {arr.shape}")
-                        fig, ax = plt.subplots(figsize=(5, 5))
-                        ext = [0, nx_m * voxel_mm_m, 0, ny_m * voxel_mm_m]
-                        im = ax.imshow(arr[mid].T, cmap='RdBu_r', origin='lower', extent=ext)
-                        ax.set_xlabel("x [mm]"); ax.set_ylabel("y [mm]")
-                        ax.set_title(f"{key} z={mid}")
-                        plt.colorbar(im, ax=ax)
-                        st.pyplot(fig); plt.close()
-
-                        st.caption(f"Range: [{arr.min():.6f}, {arr.max():.6f}]")
+        if st.button("Load D²IM data", type="secondary", key="btn_d2im_load"):
+            scan, mask, disp, missing = load_d2im_files(d2im_specimen, PROCESSED_DIR)
+            if missing:
+                st.error(f"Missing files: {missing}")
             else:
-                nz_m, ny_m, nx_m = mech_vol.shape
-                voxel_mm_m = mech_voxel / 1000.0
-                st.success(f"Loaded field: {nx_m}×{ny_m}×{nz_m}")
+                st.session_state["d2im_scan"]     = scan
+                st.session_state["d2im_mask"]     = mask
+                st.session_state["d2im_disp"]     = disp
+                st.session_state["d2im_specimen"] = d2im_specimen
+                st.session_state["d2im_voxel_um"] = voxel_d2im
+                st.success(
+                    f"Loaded {d2im_specimen} — "
+                    f"scan {scan.shape}, "
+                    f"BV/TV={mask.mean():.3f}, "
+                    f"disp range [{disp.min():.3f}, {disp.max():.3f}]"
+                )
 
-                # Store
-                comp_key = mech_component.split(" ")[0]
-                st.session_state["real_mechanical"] = {
-                    "data": mech_vol,
-                    "component": comp_key,
-                    "voxel_um": mech_voxel,
-                    "type": load_type,
-                }
+        # ── Show loaded data ──
+        if "d2im_scan" in st.session_state:
+            scan     = st.session_state["d2im_scan"]
+            mask_d   = st.session_state["d2im_mask"]
+            disp_d   = st.session_state["d2im_disp"]
+            vox_d_mm = st.session_state["d2im_voxel_um"] / 1000.0
+            nz_d, ny_d, nx_d = scan.shape
 
-                # Preview
-                mid_m = nz_m // 2
-                if nz_m > 1:
-                    mech_slice = st.slider("Z-slice", 0, nz_m - 1, mid_m, key="mech_z")
-                else:
-                    mech_slice = 0
+            st.divider()
+            st.markdown("#### Real data preview")
+            mid_d = nz_d // 2
+            prev_z = st.slider("Z-slice", 0, nz_d-1, mid_d, key="d2im_prev_z")
+            ext_d = [0, nx_d*vox_d_mm, 0, ny_d*vox_d_mm]
 
-                ext_m = [0, nx_m * voxel_mm_m, 0, ny_m * voxel_mm_m]
-
-                fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-                im0 = axes[0].imshow(mech_vol[mech_slice].T, cmap='RdBu_r', origin='lower', extent=ext_m)
-                axes[0].set_title(f"{comp_key} — z={mech_slice}")
-                axes[0].set_xlabel("x [mm]"); axes[0].set_ylabel("y [mm]")
-                plt.colorbar(im0, ax=axes[0])
-
-                axes[1].hist(mech_vol.ravel(), bins=100, color='#378ADD', alpha=0.8,
-                             edgecolor='none', density=True)
-                axes[1].set_title(f"{comp_key} distribution")
-                axes[1].set_xlabel("Value"); axes[1].set_ylabel("Density")
-                plt.tight_layout()
+            pc1, pc2, pc3 = st.columns(3)
+            with pc1:
+                st.caption("µCT scan (reference)")
+                fig, ax = plt.subplots(figsize=(5,5))
+                ax.imshow(scan[prev_z].T, cmap='gray', origin='lower',
+                          extent=ext_d, vmin=0, vmax=255)
+                ax.set_xlabel("x [mm]"); ax.set_ylabel("y [mm]")
+                st.pyplot(fig); plt.close()
+            with pc2:
+                st.caption("Bone mask")
+                fig, ax = plt.subplots(figsize=(5,5))
+                ax.imshow(mask_d[prev_z].T, cmap='gray', origin='lower', extent=ext_d)
+                ax.set_xlabel("x [mm]"); ax.set_ylabel("y [mm]")
+                st.pyplot(fig); plt.close()
+            with pc3:
+                st.caption("Displacement magnitude (DVC)")
+                fig, ax = plt.subplots(figsize=(5,5))
+                im = ax.imshow(disp_d[prev_z].T, cmap='plasma', origin='lower',
+                               extent=ext_d)
+                ax.set_xlabel("x [mm]"); ax.set_ylabel("y [mm]")
+                plt.colorbar(im, ax=ax, label="µm")
                 st.pyplot(fig); plt.close()
 
-                st.json({
-                    "Component": comp_key,
-                    "Shape": list(mech_vol.shape),
-                    "Min": round(float(mech_vol.min()), 6),
-                    "Max": round(float(mech_vol.max()), 6),
-                    "Mean": round(float(mech_vol.mean()), 6),
-                    "Std": round(float(mech_vol.std()), 6),
-                })
+            # Morphometrics
+            st.divider()
+            st.markdown("#### Measure real morphometrics")
+            if st.button("Measure morphometrics", key="btn_d2im_morph"):
+                if HAS_MORPH:
+                    with st.spinner("Measuring..."):
+                        morph_d = measure_all_morphometrics(
+                            mask_d, st.session_state["d2im_voxel_um"]
+                        )
+                    st.session_state["d2im_morph"] = morph_d
+                    targets = {
+                        "bvtv":    morph_d["BVTV"],
+                        "tbth_um": morph_d["TbTh_um_p50"],
+                        "voxel_um": st.session_state["d2im_voxel_um"],
+                        "nx": nx_d, "ny": ny_d, "nz": nz_d,
+                    }
+                    st.session_state["target_from_real"] = targets
+                else:
+                    st.warning("Morphometric module not available.")
 
-        except Exception as e:
-            st.error(f"Failed to load mechanical data: {e}")
+            if "d2im_morph" in st.session_state:
+                morph_d = st.session_state["d2im_morph"]
+                m1,m2,m3,m4,m5 = st.columns(5)
+                m1.metric("BV/TV",    f"{morph_d['BVTV']:.3f}")
+                m2.metric("Tb.Th p50",f"{morph_d['TbTh_um_p50']:.0f} µm")
+                m3.metric("Tb.N",     f"{morph_d['TbN_per_mm']:.2f} /mm")
+                m4.metric("Tb.Sp p50",f"{morph_d['TbSp_um_p50']:.0f} µm")
+                m5.metric("LCC",      f"{morph_d['lcc_frac']:.3f}")
 
-    # ── Option: generate mechanical data from uploaded bone mask ──
-    st.divider()
-    st.markdown("#### Or: run FE on uploaded structural data")
-    st.write("If you loaded a real micro-CT scan in the Data Loader, you can run FE on it here.")
+            # Generate matched synthetic
+            st.divider()
+            st.markdown("#### Generate matched synthetic + FE")
 
-    if "real_bone_mask" in st.session_state:
-        real_mask = st.session_state["real_bone_mask"]
-        real_voxel = st.session_state.get("real_voxel_um", 39.0)
-        nz_r, ny_r, nx_r = real_mask.shape
-        st.info(f"Real bone mask available: {nx_r}×{ny_r}×{nz_r}, voxel={real_voxel:.0f} µm")
+            if "d2im_morph" not in st.session_state:
+                st.info("Run 'Measure morphometrics' first.")
+            else:
+                morph_d  = st.session_state["d2im_morph"]
+                vox_d_um = st.session_state["d2im_voxel_um"]
 
-        fe_col1, fe_col2, fe_col3 = st.columns(3)
-        with fe_col1:
-            real_load = st.selectbox("Load case", ["compression", "tension", "torque"], key="real_fe_load")
-        with fe_col2:
-            real_E = st.number_input("E_bone (MPa)", value=18000.0, step=1000.0, key="real_fe_E")
-        with fe_col3:
-            real_strain = st.number_input("Applied strain", value=0.01, step=0.005, format="%.3f", key="real_fe_s")
+                d2_col1, d2_col2 = st.columns(2)
+                with d2_col1:
+                    d2_nx    = st.selectbox("XY size", [32,48,64,96,128],
+                                            index=2, key="d2im_nx")
+                    d2_nz    = st.selectbox("Z slices", [16,24,32,40],
+                                            index=1, key="d2im_nz")
+                with d2_col2:
+                    d2_seed  = st.number_input("Seed", value=100, key="d2im_seed")
+                    d2_sigma = st.slider("Base sigma", 1.0, 6.0, 2.5, 0.1,
+                                         key="d2im_sigma")
 
-        if st.button("Run FE on real data", type="primary", key="btn_real_fe"):
-            with st.spinner(f"Running FE on real data ({real_load})..."):
-                real_fe = run_fe_analysis(
-                    real_mask, real_voxel / 1000.0,
-                    load_type=real_load, E_bone=real_E,
-                    applied_strain=real_strain, verbose=False,
-                )
-            st.session_state["real_fe_results"] = real_fe
-            st.success(
-                f"FE complete — {real_fe['n_elements']} elements, "
-                f"{real_fe['solve_time']:.1f}s"
+                if st.button("▶ Generate + FE", type="primary",
+                             key="btn_d2im_pipeline"):
+                    vox_d_mm = vox_d_um / 1000.0
+
+                    with st.spinner("Generating matched synthetic..."):
+                        vol_d = generate_bone_volume_calibrated(
+                            nx=d2_nx, ny=d2_nx, nz=d2_nz,
+                            target_bvtv=morph_d["BVTV"],
+                            target_tbth_um=morph_d["TbTh_um_p50"],
+                            voxel_um=vox_d_um,
+                            base_sigma=d2_sigma,
+                            seed=int(d2_seed), verbose=False,
+                        )
+                    mask_syn = vol_d["bone_mask"]
+
+                    with st.spinner("Generating grayscale..."):
+                        gray_d = generate_grayscale(mask_syn, seed=int(d2_seed))
+
+                    with st.spinner(f"Running FE ({p_load})..."):
+                        fe_d = run_fe(
+                            mask_syn, vox_d_mm,
+                            p_load, p_E, p_nu, p_strain,
+                            gray_d if use_hetero else None,
+                            use_techmesh,
+                        )
+
+                    st.session_state["bone_volume"]         = vol_d
+                    st.session_state["pipeline_gray"]       = gray_d
+                    st.session_state["pipeline_fe"]         = fe_d
+                    st.session_state["pipeline_mask"]       = mask_syn
+                    st.session_state["pipeline_voxel_mm"]   = vox_d_mm
+                    st.session_state["d2im_fe"]             = fe_d
+                    st.session_state["d2im_syn_mask"]       = mask_syn
+                    st.session_state["d2im_syn_gray"]       = gray_d
+
+                    # Push to 3D viewer
+                    sv = strain_vol_from_fe(fe_d, mask_syn, vox_d_mm, "eps_von_mises")
+                    st.session_state["strain_volume_3d"]  = sv
+                    st.session_state["strain_label_3d"]   = "von Mises (D²IM matched)"
+                    st.session_state["strain_registered"] = True
+
+                    ma = mechanical_awareness_score(fe_d, mask_syn)
+                    st.session_state["ma_score"] = ma
+
+                    m = vol_d["morphometrics"]
+                    st.success(
+                        f"Done — BV/TV={m['BVTV']:.3f} | "
+                        f"Tb.Th={m['TbTh_um_p50']:.0f} µm | "
+                        f"E_apparent={fe_d.get('apparent_modulus', 0):.0f} MPa | "
+                        f"Mech. awareness={ma:.3f}"
+                    )
+                    st.info("Switch to **Compare** tab to see D²IM vs synthetic.")
+
+
+# ══════════════════════════════════════════════════════════════
+# TAB 3 — AUGMENTED GENERATION
+# ══════════════════════════════════════════════════════════════
+with tab_aug:
+    st.subheader("Augmented generation between DVC load steps")
+    st.write(
+        "Generate a sequence of synthetic bone volumes that interpolates "
+        "morphometric parameters between two DVC states (undeformed → deformed). "
+        "Each volume gets its own FE analysis, producing a continuous mechanical "
+        "response sequence to bridge the gaps between measured load steps."
+    )
+
+    st.markdown("#### Define two endpoint states")
+
+    aug_col1, aug_col2 = st.columns(2)
+    with aug_col1:
+        st.markdown("**State 0 — undeformed**")
+        aug_bvtv_0  = st.number_input("BV/TV",      0.05, 0.70, 0.40, 0.01, key="aug_bvtv0")
+        aug_tbth_0  = st.number_input("Tb.Th (µm)", 80, 400, 200, 5,         key="aug_tbth0")
+        aug_tbn_0   = st.number_input("Tb.N (/mm)", 0.5, 8.0, 2.0, 0.1,     key="aug_tbn0")
+
+    with aug_col2:
+        st.markdown("**State N — deformed**")
+        aug_bvtv_n  = st.number_input("BV/TV",      0.05, 0.70, 0.35, 0.01, key="aug_bvtvN")
+        aug_tbth_n  = st.number_input("Tb.Th (µm)", 80, 400, 185, 5,         key="aug_tbthN")
+        aug_tbn_n   = st.number_input("Tb.N (/mm)", 0.5, 8.0, 2.2, 0.1,     key="aug_tbnN")
+
+    # Pull from D²IM session if available
+    if "d2im_morph" in st.session_state:
+        morph_ref = st.session_state["d2im_morph"]
+        if st.button("Fill State 0 from D²IM morphometrics", key="btn_fill_aug"):
+            st.info(
+                f"State 0 filled from D²IM: "
+                f"BV/TV={morph_ref['BVTV']:.3f}, "
+                f"Tb.Th={morph_ref['TbTh_um_p50']:.0f} µm"
             )
-            if real_fe["apparent_modulus"] is not None:
-                st.metric("E_apparent", f"{real_fe['apparent_modulus']:.0f} MPa")
-    else:
-        st.info("No real bone mask in session. Load a scan in the **Data Loader** first.")
+
+    st.divider()
+    st.markdown("#### Generation settings")
+
+    aug_c1, aug_c2, aug_c3 = st.columns(3)
+    with aug_c1:
+        aug_n_steps = st.slider("Number of intermediate steps", 3, 12, 5, 1,
+            help="Total volumes generated including the two endpoints.")
+        aug_nx      = st.selectbox("XY size", [32,48,64], index=1, key="aug_nx")
+        aug_nz      = st.selectbox("Z slices", [16,24,32], index=1, key="aug_nz")
+    with aug_c2:
+        aug_voxel   = st.number_input("Voxel (µm)", value=50.0, step=1.0, key="aug_voxel")
+        aug_sigma   = st.slider("Base sigma", 1.0, 6.0, 2.5, 0.1, key="aug_sigma")
+        aug_base_seed = st.number_input("Base seed", value=200, key="aug_seed")
+    with aug_c3:
+        aug_run_fe  = st.checkbox("Run FE on each volume", value=True, key="aug_fe")
+        aug_calibrate = st.checkbox("Calibrate Tb.Th", value=True, key="aug_cal")
+        interp_mode = st.selectbox("Interpolation", ["Linear", "Sigmoid"],
+            help="Linear: uniform steps. Sigmoid: slow at endpoints, fast in middle.")
+
+    if st.button("▶ Generate augmented sequence", type="primary",
+                 use_container_width=True, key="btn_aug"):
+
+        aug_voxel_mm = aug_voxel / 1000.0
+        n = aug_n_steps
+
+        # Interpolation weights
+        t = np.linspace(0, 1, n)
+        if interp_mode == "Sigmoid":
+            t = 1 / (1 + np.exp(-10*(t - 0.5)))
+            t = (t - t.min()) / (t.max() - t.min())
+
+        bvtv_seq  = aug_bvtv_0  + t * (aug_bvtv_n  - aug_bvtv_0)
+        tbth_seq  = aug_tbth_0  + t * (aug_tbth_n  - aug_tbth_0)
+
+        aug_results = []
+        progress = st.progress(0, text="Starting...")
+
+        for i, (bv, tb) in enumerate(zip(bvtv_seq, tbth_seq)):
+            progress.progress(i / n, text=f"Step {i+1}/{n}: BV/TV={bv:.3f}, Tb.Th={tb:.0f} µm")
+            seed = int(aug_base_seed) + i
+
+            if aug_calibrate:
+                vol_i = generate_bone_volume_calibrated(
+                    nx=aug_nx, ny=aug_nx, nz=aug_nz,
+                    target_bvtv=float(bv), target_tbth_um=float(tb),
+                    voxel_um=aug_voxel, base_sigma=aug_sigma,
+                    seed=seed, verbose=False,
+                )
+            else:
+                vol_i = generate_bone_volume(
+                    nx=aug_nx, ny=aug_nx, nz=aug_nz,
+                    target_bvtv=float(bv), voxel_um=aug_voxel,
+                    base_sigma=aug_sigma, seed=seed, verbose=False,
+                )
+
+            gray_i = generate_grayscale(vol_i["bone_mask"], seed=seed)
+            fe_i   = None
+            if aug_run_fe:
+                fe_i = run_fe(
+                    vol_i["bone_mask"], aug_voxel_mm,
+                    p_load, p_E, p_nu, p_strain,
+                    gray_i if use_hetero else None,
+                    use_techmesh,
+                )
+
+            aug_results.append({
+                "step": i, "t": float(t[i]),
+                "target_bvtv": float(bv), "target_tbth": float(tb),
+                "vol": vol_i, "gray": gray_i, "fe": fe_i,
+            })
+
+        progress.progress(1.0, text="Done!")
+        st.session_state["aug_results"] = aug_results
+        st.success(f"Generated {n} volumes across the deformation sequence.")
+
+    # ── Display augmented results ──
+    if "aug_results" in st.session_state:
+        aug_results = st.session_state["aug_results"]
+        n = len(aug_results)
+        aug_voxel_mm = aug_results[0]["vol"]["voxel_um"] / 1000.0
+
+        st.divider()
+        st.markdown("#### Sequence overview")
+
+        # Plot BV/TV and E_apparent across steps
+        steps     = [r["step"] for r in aug_results]
+        bvtv_act  = [r["vol"]["morphometrics"]["BVTV"] for r in aug_results]
+        tbth_act  = [r["vol"]["morphometrics"]["TbTh_um_p50"] for r in aug_results]
+        e_app     = [r["fe"]["apparent_modulus"] if r["fe"] and
+                     r["fe"].get("apparent_modulus") else None
+                     for r in aug_results]
+
+        fig, axes = plt.subplots(1, 3 if any(e_app) else 2, figsize=(15, 4))
+        axes[0].plot(steps, bvtv_act, 'o-', color='#378ADD', lw=2)
+        axes[0].set_title("BV/TV across steps")
+        axes[0].set_xlabel("Load step"); axes[0].set_ylabel("BV/TV")
+
+        axes[1].plot(steps, tbth_act, 's-', color='#E85D3A', lw=2)
+        axes[1].set_title("Tb.Th across steps")
+        axes[1].set_xlabel("Load step"); axes[1].set_ylabel("Tb.Th (µm)")
+
+        if any(e_app) and len(axes) > 2:
+            valid_e = [(s,e) for s,e in zip(steps,e_app) if e is not None]
+            axes[2].plot([v[0] for v in valid_e], [v[1] for v in valid_e],
+                         '^-', color='#0F6E56', lw=2)
+            axes[2].set_title("E_apparent across steps")
+            axes[2].set_xlabel("Load step"); axes[2].set_ylabel("E (MPa)")
+
+        plt.tight_layout()
+        st.pyplot(fig); plt.close()
+
+        # Slice gallery
+        st.markdown("#### Slice gallery")
+        n_show = min(n, 5)
+        cols   = st.columns(n_show)
+        idxs   = np.linspace(0, n-1, n_show, dtype=int)
+
+        for col, idx in zip(cols, idxs):
+            r    = aug_results[idx]
+            mask = r["vol"]["bone_mask"]
+            gray = r["gray"]
+            mid  = mask.shape[0] // 2
+            ext  = [0, mask.shape[2]*aug_voxel_mm, 0, mask.shape[1]*aug_voxel_mm]
+
+            with col:
+                st.caption(f"Step {r['step']} (t={r['t']:.2f})")
+                fig, axes = plt.subplots(1, 2, figsize=(5, 2.5))
+                axes[0].imshow(mask[mid].T, cmap='gray', origin='lower', extent=ext)
+                axes[0].axis('off'); axes[0].set_title("Mask", fontsize=8)
+                axes[1].imshow(gray[mid].T, cmap='gray', origin='lower',
+                               extent=ext, vmin=0, vmax=255)
+                axes[1].axis('off'); axes[1].set_title("Gray", fontsize=8)
+                plt.tight_layout(pad=0.1)
+                st.pyplot(fig); plt.close()
+
+                morph_i = r["vol"]["morphometrics"]
+                st.caption(
+                    f"BV/TV={morph_i['BVTV']:.3f}\n"
+                    f"Tb.Th={morph_i['TbTh_um_p50']:.0f} µm"
+                )
+                if r["fe"] and r["fe"].get("apparent_modulus"):
+                    st.caption(f"E={r['fe']['apparent_modulus']:.0f} MPa")
 
 
-# ──────────────────────────────────────────────────────────────
-# TAB 3 — COMPARE
-# ──────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════
+# TAB 4 — COMPARE
+# ══════════════════════════════════════════════════════════════
 with tab_compare:
     st.subheader("Compare synthetic vs real mechanical fields")
 
-    has_syn_fe = "pipeline_fe" in st.session_state
-    has_real_mech = "real_mechanical" in st.session_state
-    has_real_npz = "real_mechanical_npz" in st.session_state
-    has_real_fe = "real_fe_results" in st.session_state
+    has_syn_fe   = "pipeline_fe" in st.session_state
+    has_d2im_fe  = "d2im_fe" in st.session_state
+    has_d2im_disp = "d2im_disp" in st.session_state
 
     if not has_syn_fe:
-        st.warning("No synthetic FE results yet. Run the pipeline in the **Generate & Analyse** tab.")
-    if not (has_real_mech or has_real_npz or has_real_fe):
-        st.warning("No real mechanical data yet. Load data or run FE on real data in the **Load Mechanical Data** tab.")
+        st.warning("Run the synthetic or D²IM pipeline first.")
+        st.stop()
 
-    if has_syn_fe and (has_real_mech or has_real_npz or has_real_fe):
+    fe_syn    = st.session_state["pipeline_fe"]
+    mask_syn  = st.session_state.get("pipeline_mask")
+    voxel_syn = st.session_state.get("pipeline_voxel_mm", 0.039)
+    strain_syn = fe_syn["strain_field"]
 
-        syn_fe = st.session_state["pipeline_fe"]
-        syn_vol = st.session_state["bone_volume"]
-        syn_strain = syn_fe["strain_field"]
-        syn_mask = syn_vol["bone_mask"]
-        nz_s, ny_s, nx_s = syn_mask.shape
-        voxel_mm_s = syn_vol["voxel_um"] / 1000.0
+    # ── D²IM displacement comparison ──
+    if has_d2im_disp:
+        st.markdown("#### Synthetic FE strain vs D²IM displacement magnitude")
+        st.write(
+            "Comparing synthetic von Mises strain against the real DVC "
+            "displacement magnitude from D²IM. Both are normalised to [0,1] "
+            "before computing Pearson r and RMSE."
+        )
 
-        # ── If we have real FE results, compare directly ──
-        if has_real_fe:
-            real_fe = st.session_state["real_fe_results"]
-            real_strain = real_fe["strain_field"]
+        disp_real = st.session_state["d2im_disp"]
+        vox_real  = st.session_state.get("d2im_voxel_um", 50.0) / 1000.0
+        nz_r2, ny_r2, nx_r2 = disp_real.shape
 
-            st.markdown("#### FE comparison: synthetic vs real")
+        # Build synthetic von Mises volume at real scan resolution
+        if mask_syn is not None:
+            nz_s, ny_s, nx_s = mask_syn.shape
+            sv = strain_vol_from_fe(fe_syn, mask_syn, voxel_syn, "eps_von_mises")
 
-            # Summary metrics
-            comp_cols = st.columns([2, 2, 2, 2])
-            comp_cols[0].markdown("**Metric**")
-            comp_cols[1].markdown("**Synthetic**")
-            comp_cols[2].markdown("**Real**")
-            comp_cols[3].markdown("**Δ (%)**")
+            # Normalise both to [0,1]
+            sv_n = (sv - sv.min()) / (sv.max() - sv.min() + 1e-8)
+            rd_n = (disp_real - disp_real.min()) / \
+                   (disp_real.max() - disp_real.min() + 1e-8)
 
-            fe_metrics = [
-                ("E_apparent (MPa)", syn_fe.get("apparent_modulus"), real_fe.get("apparent_modulus")),
-                ("Voigt bound (MPa)", syn_fe.get("voigt_bound"), real_fe.get("voigt_bound")),
-                ("ε_zz mean", float(syn_strain["eps_zz"].mean()), float(real_strain["eps_zz"].mean())),
-                ("ε_zz std", float(syn_strain["eps_zz"].std()), float(real_strain["eps_zz"].std())),
-                ("von Mises mean", float(syn_strain["eps_von_mises"].mean()), float(real_strain["eps_von_mises"].mean())),
-                ("von Mises max", float(syn_strain["eps_von_mises"].max()), float(real_strain["eps_von_mises"].max())),
-            ]
+            # Compare on common z-slice
+            mid_c = min(nz_s, nz_r2) // 2
+            comp_z = st.slider("Z-slice", 0, min(nz_s, nz_r2)-1, mid_c,
+                                key="comp_z_d2im")
 
-            for label, sv, rv in fe_metrics:
-                if sv is not None and rv is not None and rv != 0:
-                    delta = f"{(sv - rv) / abs(rv) * 100:+.1f}%"
-                else:
-                    delta = "—"
-                cols = st.columns([2, 2, 2, 2])
-                cols[0].write(label)
-                cols[1].write(f"{sv:.4f}" if sv is not None else "—")
-                cols[2].write(f"{rv:.4f}" if rv is not None else "—")
-                cols[3].write(delta)
+            ext_s = [0, nx_s*voxel_syn, 0, ny_s*voxel_syn]
+            ext_r = [0, nx_r2*vox_real, 0, ny_r2*vox_real]
 
-            st.divider()
-
-            # Strain distribution comparison
-            st.markdown("#### Strain distribution overlay")
-            dcol1, dcol2, dcol3 = st.columns(3)
-
-            with dcol1:
-                fig, ax = plt.subplots(figsize=(5, 4))
-                ax.hist(syn_strain["eps_zz"], bins=80, alpha=0.5, density=True,
-                        color="#378ADD", label="Synthetic", edgecolor="none")
-                ax.hist(real_strain["eps_zz"], bins=80, alpha=0.5, density=True,
-                        color="#E85D3A", label="Real", edgecolor="none")
-                ax.set_title("ε_zz"); ax.set_xlabel("Strain"); ax.legend()
-                st.pyplot(fig); plt.close()
-
-            with dcol2:
-                fig, ax = plt.subplots(figsize=(5, 4))
-                ax.hist(syn_strain["eps_von_mises"], bins=80, alpha=0.5, density=True,
-                        color="#378ADD", label="Synthetic", edgecolor="none")
-                ax.hist(real_strain["eps_von_mises"], bins=80, alpha=0.5, density=True,
-                        color="#E85D3A", label="Real", edgecolor="none")
-                ax.set_title("von Mises"); ax.set_xlabel("Strain"); ax.legend()
-                st.pyplot(fig); plt.close()
-
-            with dcol3:
-                fig, ax = plt.subplots(figsize=(5, 4))
-                ax.hist(syn_strain["eps_max_principal"], bins=80, alpha=0.5, density=True,
-                        color="#378ADD", label="Synthetic", edgecolor="none")
-                ax.hist(real_strain["eps_max_principal"], bins=80, alpha=0.5, density=True,
-                        color="#E85D3A", label="Real", edgecolor="none")
-                ax.set_title("Max principal"); ax.set_xlabel("Strain"); ax.legend()
-                st.pyplot(fig); plt.close()
-
-        # ── If we have loaded mechanical fields, compare those ──
-        elif has_real_mech:
-            real_mech = st.session_state["real_mechanical"]
-            real_data = real_mech["data"]
-            comp_key = real_mech["component"]
-            nz_r, ny_r, nx_r = real_data.shape
-            voxel_mm_r = real_mech["voxel_um"] / 1000.0
-
-            st.markdown(f"#### Comparing: synthetic vs real **{comp_key}**")
-
-            # Map synthetic strain component to match
-            syn_comp_map = {
-                "eps_zz": syn_strain["eps_zz"],
-                "eps_xx": syn_strain["eps_xx"],
-                "eps_yy": syn_strain["eps_yy"],
-                "eps_xy": syn_strain["eps_xy"],
-                "eps_von_mises": syn_strain["eps_von_mises"],
-                "eps_max_principal": syn_strain["eps_max_principal"],
-            }
-
-            max_z = min(nz_s, nz_r) - 1
-            if max_z > 0:
-                comp_z = st.slider("Z-slice", 0, max_z, max_z // 2, key="comp_z")
-            else:
-                comp_z = 0
-
-            mid_z_mm_s = (comp_z + 0.5) * voxel_mm_s
-            ext_s = [0, nx_s * voxel_mm_s, 0, ny_s * voxel_mm_s]
-            ext_r = [0, nx_r * voxel_mm_r, 0, ny_r * voxel_mm_r]
-
-            ccol1, ccol2, ccol3 = st.columns(3)
-
-            with ccol1:
-                st.caption(f"Synthetic {comp_key}")
-                if comp_key in syn_comp_map:
-                    syn_img = strain_to_slice(
-                        syn_comp_map[comp_key], syn_strain["centroids"],
-                        nx_s, ny_s, voxel_mm_s, mid_z_mm_s)
-                    fig, ax = plt.subplots(figsize=(5, 5))
-                    im = ax.imshow(syn_img.T, cmap='RdBu_r', origin='lower', extent=ext_s)
-                    ax.set_xlabel("x [mm]"); ax.set_ylabel("y [mm]")
-                    plt.colorbar(im, ax=ax)
-                    st.pyplot(fig); plt.close()
-                else:
-                    st.info(f"Component '{comp_key}' not in synthetic results")
-
-            with ccol2:
-                st.caption(f"Real {comp_key}")
-                fig, ax = plt.subplots(figsize=(5, 5))
-                im = ax.imshow(real_data[comp_z].T, cmap='RdBu_r', origin='lower', extent=ext_r)
+            cc1, cc2, cc3 = st.columns(3)
+            with cc1:
+                st.caption("Synthetic von Mises (normalised)")
+                fig, ax = plt.subplots(figsize=(5,5))
+                im = ax.imshow(sv_n[comp_z].T, cmap='plasma',
+                               origin='lower', extent=ext_s, vmin=0, vmax=1)
                 ax.set_xlabel("x [mm]"); ax.set_ylabel("y [mm]")
                 plt.colorbar(im, ax=ax)
                 st.pyplot(fig); plt.close()
 
-            with ccol3:
-                st.caption("Distribution overlay")
-                fig, ax = plt.subplots(figsize=(5, 5))
-                if comp_key in syn_comp_map:
-                    ax.hist(syn_comp_map[comp_key], bins=80, alpha=0.5, density=True,
-                            color="#378ADD", label="Synthetic", edgecolor="none")
-                ax.hist(real_data.ravel(), bins=80, alpha=0.5, density=True,
-                        color="#E85D3A", label="Real", edgecolor="none")
-                ax.set_xlabel("Value"); ax.set_ylabel("Density"); ax.legend()
+            with cc2:
+                st.caption("D²IM displacement magnitude (normalised)")
+                fig, ax = plt.subplots(figsize=(5,5))
+                im = ax.imshow(rd_n[comp_z].T, cmap='plasma',
+                               origin='lower', extent=ext_r, vmin=0, vmax=1)
+                ax.set_xlabel("x [mm]"); ax.set_ylabel("y [mm]")
+                plt.colorbar(im, ax=ax)
                 st.pyplot(fig); plt.close()
 
-            # Statistics comparison
-            if comp_key in syn_comp_map:
-                syn_vals = syn_comp_map[comp_key]
-                st.markdown("#### Statistics")
-                stat_cols = st.columns([2, 2, 2])
-                stat_cols[0].markdown("**Statistic**")
-                stat_cols[1].markdown("**Synthetic**")
-                stat_cols[2].markdown("**Real**")
+            with cc3:
+                st.caption("Distribution overlay")
+                fig, ax = plt.subplots(figsize=(5,5))
+                ax.hist(sv_n.ravel(), bins=80, alpha=0.5, density=True,
+                        color="#378ADD", label="Synthetic ε_vm", edgecolor="none")
+                ax.hist(rd_n.ravel(), bins=80, alpha=0.5, density=True,
+                        color="#E85D3A", label="D²IM |u|", edgecolor="none")
+                ax.set_xlabel("Normalised value")
+                ax.set_ylabel("Density"); ax.legend()
+                st.pyplot(fig); plt.close()
 
-                for stat_name, syn_fn, real_fn in [
-                    ("Mean", np.mean, np.mean),
-                    ("Std", np.std, np.std),
-                    ("Min", np.min, np.min),
-                    ("Max", np.max, np.max),
-                    ("Median", np.median, np.median),
-                    ("p5", lambda x: np.percentile(x, 5), lambda x: np.percentile(x, 5)),
-                    ("p95", lambda x: np.percentile(x, 95), lambda x: np.percentile(x, 95)),
-                ]:
-                    cols = st.columns([2, 2, 2])
-                    cols[0].write(stat_name)
-                    cols[1].write(f"{syn_fn(syn_vals):.6f}")
-                    cols[2].write(f"{real_fn(real_data):.6f}")
+            # Pearson r and RMSE on flattened volumes
+            r_val, rmse_val = compare_fields(sv_n, rd_n)
+            if r_val is not None:
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Pearson r",
+                          f"{r_val:.3f}",
+                          help="Correlation between synthetic strain and real displacement.")
+                m2.metric("RMSE",
+                          f"{rmse_val:.4f}",
+                          help="Root-mean-square error on normalised fields.")
+                m3.metric("Mech. awareness",
+                          f"{st.session_state.get('ma_score', 0):.3f}")
+
+        st.divider()
+
+    # ── If we also have FE on both sides ──
+    if has_d2im_fe and has_syn_fe:
+        fe_real = st.session_state["d2im_fe"]
+        strain_real = fe_real["strain_field"]
+
+        st.markdown("#### FE comparison: synthetic vs D²IM-matched")
+
+        # Summary table
+        comp_cols = st.columns([2,2,2,2])
+        comp_cols[0].markdown("**Metric**")
+        comp_cols[1].markdown("**Synthetic**")
+        comp_cols[2].markdown("**D²IM matched**")
+        comp_cols[3].markdown("**Δ (%)**")
+
+        metrics = [
+            ("E_apparent (MPa)", fe_syn.get("apparent_modulus"),
+                                  fe_real.get("apparent_modulus")),
+            ("ε_zz mean",  float(strain_syn["eps_zz"].mean()),
+                           float(strain_real["eps_zz"].mean())),
+            ("ε_zz std",   float(strain_syn["eps_zz"].std()),
+                           float(strain_real["eps_zz"].std())),
+            ("von Mises mean", float(strain_syn["eps_von_mises"].mean()),
+                               float(strain_real["eps_von_mises"].mean())),
+            ("von Mises max",  float(strain_syn["eps_von_mises"].max()),
+                               float(strain_real["eps_von_mises"].max())),
+        ]
+
+        for label, sv2, rv2 in metrics:
+            if sv2 is not None and rv2 is not None and rv2 != 0:
+                delta = f"{(sv2-rv2)/abs(rv2)*100:+.1f}%"
+            else:
+                delta = "—"
+            cols = st.columns([2,2,2,2])
+            cols[0].write(label)
+            cols[1].write(f"{sv2:.4f}" if sv2 is not None else "—")
+            cols[2].write(f"{rv2:.4f}" if rv2 is not None else "—")
+            cols[3].write(delta)
+
+        # Distribution comparison
+        st.markdown("#### Strain distribution overlay")
+        dc1, dc2, dc3 = st.columns(3)
+        for col, key, label in [
+            (dc1, "eps_zz",         "ε_zz"),
+            (dc2, "eps_von_mises",  "von Mises"),
+            (dc3, "eps_max_principal","Max principal"),
+        ]:
+            with col:
+                fig, ax = plt.subplots(figsize=(5,4))
+                ax.hist(strain_syn[key], bins=80, alpha=0.5, density=True,
+                        color="#378ADD", label="Synthetic", edgecolor="none")
+                ax.hist(strain_real[key], bins=80, alpha=0.5, density=True,
+                        color="#E85D3A", label="D²IM matched", edgecolor="none")
+                ax.set_title(label); ax.set_xlabel("Strain"); ax.legend()
+                st.pyplot(fig); plt.close()
