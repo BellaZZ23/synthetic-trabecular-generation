@@ -346,8 +346,28 @@ if input_mode == "Upload micro-CT scan":
     voxel_um = st.sidebar.number_input("Voxel size (µm)", value=39.0, step=1.0)
 
     st.sidebar.header("Binarisation")
-    auto_threshold = st.sidebar.checkbox("Auto threshold (Otsu)", value=True)
-    manual_threshold = st.sidebar.slider("Manual threshold", 0, 255, 80, 1)
+    mask_source = st.sidebar.radio(
+        "Mask source",
+        ["Auto threshold (Otsu)", "Manual threshold", "Pre-segmented mask (.npy)"],
+        help=(
+            "Auto: Otsu threshold on the uploaded scan.\n\n"
+            "Manual: set threshold yourself.\n\n"
+            "Pre-segmented: upload a binary mask .npy directly "
+            "(e.g. bone_mask_S9_INT_UL_AP_50.npy from D\u00b2IM)."
+        ),
+    )
+    auto_threshold   = mask_source == "Auto threshold (Otsu)"
+    manual_threshold = st.sidebar.slider(
+        "Manual threshold", 0, 255, 80, 1,
+        disabled=mask_source != "Manual threshold",
+    )
+    preseg_mask_up = None
+    if mask_source == "Pre-segmented mask (.npy)":
+        preseg_mask_up = st.sidebar.file_uploader(
+            "Pre-segmented mask (.npy)",
+            type=["npy"], key="preseg_mask_up",
+            help="Shape (Z, Y, X) uint8. Values 0/1 or 0/255.",
+        )
 
 
 # ══════════════════════════════════════════════════════════════
@@ -524,14 +544,36 @@ if volume is not None:
     nz, ny, nx = volume.shape
     st.success(f"Loaded volume: {nx}×{ny}×{nz} voxels, voxel size = {voxel_um:.1f} µm")
 
-    if auto_threshold:
+    # ── Binarise or load pre-segmented mask ──────────────────
+    preseg_loaded = False
+    if mask_source == "Pre-segmented mask (.npy)" and preseg_mask_up is not None:
+        raw_mask = np.load(io.BytesIO(preseg_mask_up.read()))
+        if raw_mask.max() > 1:
+            bone_mask = (raw_mask > 127).astype(np.uint8)
+        else:
+            bone_mask = raw_mask.astype(np.uint8)
+        if bone_mask.shape != volume.shape:
+            st.warning(
+                f"Mask shape {bone_mask.shape} differs from scan {volume.shape}. "
+                "Using Otsu as fallback."
+            )
+            from skimage.filters import threshold_otsu
+            thresh = int(threshold_otsu(volume))
+            bone_mask = binarise(volume, thresh)
+        else:
+            preseg_loaded = True
+            st.sidebar.success(
+                f"Pre-segmented mask loaded — BV/TV={bone_mask.mean():.3f}"
+            )
+        thresh = 0  # not used but keeps downstream code happy
+    elif auto_threshold:
         from skimage.filters import threshold_otsu
         thresh = int(threshold_otsu(volume))
         st.sidebar.info(f"Otsu threshold: {thresh}")
+        bone_mask = binarise(volume, thresh)
     else:
         thresh = manual_threshold
-
-    bone_mask = binarise(volume, thresh)
+        bone_mask = binarise(volume, thresh)
 
     st.session_state["real_volume"] = volume
     st.session_state["real_bone_mask"] = bone_mask
