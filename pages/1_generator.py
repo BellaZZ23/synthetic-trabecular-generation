@@ -74,7 +74,9 @@ base_sigma  = st.sidebar.slider(
 )
 aniso_ratio = st.sidebar.slider(
     "Anisotropy ratio", 0.5, 3.0, 1.0, 0.1,
-    help="1.0 = isotropic. >1 elongates in Z (vertebral-like).",
+    help="1.0 = isotropic. >1 elongates in Z (vertebral-like). "
+         "Note: not yet in generator signature — planned for v16.",
+    disabled=True,
 )
 
 # ── Elastic warp ──
@@ -96,7 +98,9 @@ plate_weight = st.sidebar.slider(
 )
 rod_weight = st.sidebar.slider(
     "Rod weight", 0.0, 1.0, 0.3, 0.05,
-    help="Weight of rod-like structures in the mixed architecture.",
+    help="Weight of rod-like structures. "
+         "Note: not yet in generator signature — planned for v16.",
+    disabled=True,
 )
 if plate_weight + rod_weight > 0:
     st.sidebar.caption(
@@ -155,15 +159,15 @@ if st.sidebar.button(
     spinner_msg += f", Tb.Th→{tbth_um} µm..." if calibrate_tbth else ")..."
 
     with st.spinner(spinner_msg):
+        # aniso_ratio and rod_weight are not in the current generator
+        # signature — displayed for reference only until v16 adds them
         shared_kwargs = dict(
             nx=nx, ny=nx, nz=nz,
             voxel_um=voxel_um,
             base_sigma=base_sigma,
-            aniso_ratio=aniso_ratio,       # ← fixed: was missing
             warp_amp=warp_amp,
             warp_sigma=warp_sigma,
             plate_weight=plate_weight,
-            rod_weight=rod_weight,         # ← fixed: was missing
             close_iters=proto_close_iters,
             min_component=min_component,
             seed=int(seed),
