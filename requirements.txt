@@ -1,9 +1,19 @@
-﻿numpy<2
-scikit-image==0.22.0
+﻿streamlit
+numpy<2
 scipy
+scikit-image==0.22.0
+matplotlib
+plotly
 tifffile
 imageio
-pydicom
 pillow
-streamlit
-matplotlib
+pydicom
+
+# Add ONLY if you intend to run these live on the cloud (heavier build,
+# and risky on the free tier's ~1 GB RAM — prefer showing precomputed):
+#   scikit-fem        # live FE solver (2_fe_solver.py)
+#   meshio            # mesh I/O for FE
+#   SimpleITK         # rigid registration in the data loader
+#   nibabel           # NIfTI upload support
+#   scikit-learn      # dimension-reduction page
+#   umap-learn        # UMAP for the dimension-reduction page

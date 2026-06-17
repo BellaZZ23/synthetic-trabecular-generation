@@ -306,6 +306,67 @@ input_mode = st.sidebar.radio(
     help="Upload a scan to extract parameters, or type known values directly.",
 )
 
+# ══════════════════════════════════════════════════════════════
+# DEMO DATA — one-click real D²IM volume (no upload needed)
+# ══════════════════════════════════════════════════════════════
+# Loads a pre-processed D²IM specimen and pushes it into the SAME session
+# keys the rest of the app reads, so the generator, pipeline and 3D viewer
+# pick it up with no further clicks. Upload path above is untouched.
+st.sidebar.divider()
+st.sidebar.subheader("🎬 Demo mode")
+st.sidebar.caption("Skip the upload — load a pre-processed D²IM specimen.")
+
+# processed/ holds: reference_scan_<spec>.npy, bone_mask_<spec>.npy,
+#                   displacement_magnitude_<spec>.npy
+DEMO_SPECIMENS = ["S9_INT_UL_AP_50", "S9_INT_UL_ML_50"]
+demo_spec = st.sidebar.selectbox("Specimen", DEMO_SPECIMENS, key="demo_spec")
+
+# Cloud-safe path resolution: committed data/demo first (used on Streamlit
+# Cloud), then your full local processed data, then the OneDrive fallback.
+DEMO_REPO_ROOT = Path(__file__).resolve().parent.parent
+_PROCESSED_CANDIDATES = [
+    DEMO_REPO_ROOT / "data" / "demo",
+    DEMO_REPO_ROOT / "data" / "strain" / "processed",
+    Path(r"C:\Users\Isabella\OneDrive - zeki\Documents\Research"
+         r"\synthetic_trabeculae\data\strain\processed"),
+]
+PROCESSED_DIR = next((p for p in _PROCESSED_CANDIDATES if p.exists()),
+                     _PROCESSED_CANDIDATES[0])
+
+if st.sidebar.button("🎬 Load demo data", type="primary",
+                     use_container_width=True, key="btn_load_demo"):
+    scan_f = PROCESSED_DIR / f"reference_scan_{demo_spec}.npy"
+    mask_f = PROCESSED_DIR / f"bone_mask_{demo_spec}.npy"
+    disp_f = PROCESSED_DIR / f"displacement_magnitude_{demo_spec}.npy"
+    missing = [f.name for f in (scan_f, mask_f, disp_f) if not f.exists()]
+    if missing:
+        st.sidebar.error(f"Not found in {PROCESSED_DIR}: {missing}")
+    else:
+        with st.spinner(f"Loading {demo_spec}..."):
+            scan = normalise_to_uint8(np.load(scan_f))
+            raw_mask = np.load(mask_f)
+            mask = (raw_mask > 127).astype(np.uint8) if raw_mask.max() > 1 \
+                   else raw_mask.astype(np.uint8)
+            disp = np.nan_to_num(np.load(disp_f), nan=0.0).astype(np.float32)
+
+        # Push into the SAME session keys the rest of the pipeline reads
+        st.session_state["real_volume"]       = scan
+        st.session_state["real_bone_mask"]    = mask
+        st.session_state["real_voxel_um"]     = 50.0          # D²IM is 50 µm
+        st.session_state["strain_volume_3d"]  = disp
+        st.session_state["strain_label_3d"]   = "D²IM displacement magnitude"
+        st.session_state["strain_registered"] = True          # same grid as scan
+        # also expose to the D²IM pipeline tab
+        st.session_state["d2im_scan"]     = scan
+        st.session_state["d2im_mask"]     = mask
+        st.session_state["d2im_disp"]     = disp
+        st.session_state["d2im_specimen"] = demo_spec
+        st.session_state["d2im_voxel_um"] = 50.0
+        st.sidebar.success(
+            f"Loaded {demo_spec} — {scan.shape[2]}×{scan.shape[1]}×{scan.shape[0]}, "
+            f"BV/TV={mask.mean():.3f}. Generator, pipeline & 3D viewer are ready."
+        )
+
 # ── Data input mode (image-only vs image+strain) ──────────────
 st.sidebar.header("Strain input")
 strain_input_mode = st.sidebar.radio(
