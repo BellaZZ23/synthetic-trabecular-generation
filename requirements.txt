@@ -5,3 +5,5 @@ tifffile
 imageio
 pydicom
 pillow
+streamlit
+matplotlib
