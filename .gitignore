@@ -26,3 +26,6 @@ data/
 # Python caches / venv
 __pycache__/
 .venv/
+data/*
+!data/demo/
+!data/demo/**
