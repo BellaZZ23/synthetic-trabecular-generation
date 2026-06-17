@@ -1,6 +1,5 @@
 ﻿streamlit
 numpy<2
-scipy
 scikit-image==0.22.0
 matplotlib
 plotly
