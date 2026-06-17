@@ -45,11 +45,28 @@ def build_mesh_figure(verts, faces, color_values=None, colorscale='Viridis',
     )
 
     if color_values is not None:
+        # Robust colour limits: base the range on measured (finite, non-zero)
+        # values and cap the top at the 90th percentile. DVC fields carry a
+        # few very-high outlier voxels (edge / uncorrelated regions) that
+        # otherwise stretch the scale and collapse the whole surface to one
+        # colour. p90 puts the real displacement across the full colourbar.
+        # Display-only — the data is unchanged.
+        cv = np.asarray(color_values, dtype=float)
+        finite = cv[np.isfinite(cv)]
+        meaningful = finite[finite > 0]
+        ref = meaningful if meaningful.size > 50 else finite
+        if ref.size:
+            lo = float(np.percentile(ref, 2))
+            hi = float(np.percentile(ref, 90))
+        else:
+            lo, hi = 0.0, 1.0
+        if hi <= lo:
+            hi = lo + 1e-6
         mesh_kwargs["intensity"] = color_values
         mesh_kwargs["colorscale"] = colorscale
         mesh_kwargs["colorbar"] = dict(title=color_label, thickness=15)
-        mesh_kwargs["cmin"] = np.nanpercentile(color_values, 2)
-        mesh_kwargs["cmax"] = np.nanpercentile(color_values, 98)
+        mesh_kwargs["cmin"] = lo
+        mesh_kwargs["cmax"] = hi
     else:
         mesh_kwargs["color"] = '#C8BFA9'
 
