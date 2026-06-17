@@ -4,5 +4,6 @@ scikit-image==0.22.0
 matplotlib
 plotly
 tifffile
+scipy
 imageio
 pillow
