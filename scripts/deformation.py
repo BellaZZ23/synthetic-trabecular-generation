@@ -75,48 +75,81 @@ def smooth_random_field(S, sigma=6.0, amplitude=1.0, seed=0):
 
 
 # ---------------------------------------------------------------------------
-# 3. reference recovery  (per-block phase correlation)  -- REPLACE with your DVC
+# 3. DVC recovery  (per-block sub-pixel phase correlation, outlier-rejected)
 # ---------------------------------------------------------------------------
-def recover_displacement(ref, defd, block=16, step=8, upsample=10, mask=None):
+def recover_displacement(ref, defd, block=24, step=12, upsample=20, mask=None,
+                         max_shift=None, reject_outliers=True, window=False):
     """Estimate the displacement field by matching sub-volumes between ref and
-    defd with sub-pixel phase correlation. Returns (centers, disp, dense_u).
+    defd. Returns (centers, disps, dense_u); disps in VOXEL units.
 
-    This is a reference implementation so the loop runs end to end -- swap in
-    your own NCC/DVC matcher and keep the same return signature.
+    Settled defaults (verified on the round-trip test):
+      * block=24  -- larger blocks carry more texture -> lower error, coarser grid
+      * reject_outliers -- 3x3 median over the block grid drops isolated bad matches
+      * window=False -- a Hann window HURT on uniformly-textured blocks (removes
+        signal with no edge-leakage to suppress). Try window=True on real
+        trabecular data where block boundaries cut through structure; measure it.
+    Sub-pixel accuracy comes from `upsample`. This is a reference DVC -- if you
+    later add a dedicated matcher, keep this signature and the loop still works.
     """
     from skimage.registration import phase_cross_correlation
+    from scipy.ndimage import median_filter
+    import itertools
     ref = np.asarray(ref, float)
     defd = np.asarray(defd, float)
     S = ref.shape
     ndim = ref.ndim
+    if max_shift is None:
+        max_shift = block / 2.0
 
-    centers, disps = [], []
-    ranges = [range(block // 2, S[d] - block // 2, step) for d in range(ndim)]
-    import itertools
-    for c in itertools.product(*ranges):
+    win = None
+    if window:
+        w = np.hanning(block)
+        win = w
+        for _ in range(ndim - 1):
+            win = np.multiply.outer(win, w)
+
+    axes_centers = [list(range(block // 2, S[d] - block // 2, step)) for d in range(ndim)]
+    grid_shape = tuple(len(a) for a in axes_centers)
+    disp_grid = np.full((ndim, *grid_shape), np.nan)
+
+    for gi, c in zip(itertools.product(*[range(n) for n in grid_shape]),
+                     itertools.product(*axes_centers)):
         sl = tuple(slice(ci - block // 2, ci + block // 2) for ci in c)
         rb, db = ref[sl], defd[sl]
-        if mask is not None and mask[sl].mean() < 0.2:
-            continue                                   # skip mostly-empty blocks
+        if mask is not None and mask[sl].mean() < 0.25:
+            continue
         if rb.std() < 1e-6 or db.std() < 1e-6:
             continue
-        shift, _, _ = phase_cross_correlation(rb, db, upsample_factor=upsample)
-        # phase_cross_correlation(ref, moving) returns the shift that moves
-        # `moving` onto `ref`; the feature displacement ref->def is +shift here.
-        centers.append(c)
-        disps.append(np.asarray(shift, float))
+        a_, b_ = (rb * win, db * win) if win is not None else (rb, db)
+        shift, _, _ = phase_cross_correlation(a_, b_, upsample_factor=upsample)
+        # phase_cross_correlation(ref, moving): feature displacement ref->def = +shift
+        if np.any(np.abs(shift) > max_shift):
+            continue
+        disp_grid[(slice(None), *gi)] = shift
 
+    if reject_outliers and np.isfinite(disp_grid).any():
+        for d in range(ndim):
+            comp = disp_grid[d]
+            filled = np.where(np.isfinite(comp), comp, np.nanmedian(comp))
+            sm = median_filter(filled, size=3, mode="nearest")
+            disp_grid[d] = np.where(np.isfinite(comp), sm, np.nan)
+
+    centers, disps = [], []
+    for gi, c in zip(itertools.product(*[range(n) for n in grid_shape]),
+                     itertools.product(*axes_centers)):
+        v = disp_grid[(slice(None), *gi)]
+        if np.all(np.isfinite(v)):
+            centers.append(c)
+            disps.append(v.copy())
     centers = np.array(centers)
-    disps = np.array(disps)                            # (nblocks, ndim)
+    disps = np.array(disps)
 
-    # densify block estimates onto the full grid (nearest-neighbour is enough
-    # for scoring at matched points; interpolate if you need a dense field)
     dense_u = np.zeros((ndim, *S), dtype=float)
     if len(centers):
         from scipy.interpolate import NearestNDInterpolator
+        grid = np.indices(S).reshape(ndim, -1).T
         for d in range(ndim):
             interp = NearestNDInterpolator(centers, disps[:, d])
-            grid = np.indices(S).reshape(ndim, -1).T
             dense_u[d] = interp(grid).reshape(S)
     return centers, disps, dense_u
 
@@ -165,7 +198,7 @@ if __name__ == "__main__":
     defd = warp_volume(ref, u_true)
 
     # recover with the reference matcher, score at block centres (fair: where we estimate)
-    centers, disps, dense_u = recover_displacement(ref, defd, block=16, step=12, mask=mask)
+    centers, disps, dense_u = recover_displacement(ref, defd, block=24, step=12, mask=mask)
     u_true_at_centers = sample_field_at_points(u_true, centers)
 
     # scoring at block centres (where we actually estimate)
