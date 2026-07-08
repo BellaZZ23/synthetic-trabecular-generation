@@ -184,9 +184,35 @@ st.code(
 
 st.success(
     "Classical backbone complete · segmentation validated against ground "
-    "truth · real DVC fields loaded · quantum slot defined and registered — "
-    "the kernel drops in next."
+    "truth · real DVC fields loaded · quantum slot defined · "
+    "**Quantum Reservoir Computing prototype live on page 5**"
 )
+
+# ══════════════════════════════════════════════════════════════
+# QUANTUM RESERVOIR COMPUTING PREVIEW
+# ══════════════════════════════════════════════════════════════
+st.divider()
+st.subheader("Quantum Reservoir Computing — what's new")
+
+qrc1, qrc2, qrc3 = st.columns(3)
+with qrc1:
+    st.markdown(
+        "**Fixed reservoir**\n\n"
+        "A random quantum circuit acts as a fixed, high-dimensional feature map. "
+        "Only the linear readout is trained — fast, stable, no vanishing gradients."
+    )
+with qrc2:
+    st.markdown(
+        "**Entanglement sweet spot**\n\n"
+        "Performance peaks at the depth where bipartite entropy is half-saturated. "
+        "Too shallow = separable. Too deep = Haar-random, information washed out."
+    )
+with qrc3:
+    st.markdown(
+        "**Temporal / load-sequence mode**\n\n"
+        "Morphometric snapshots x₁→x₂→…→xₜ are fed sequentially without resetting. "
+        "The reservoir's quantum memory bridges the gaps between DVC load steps."
+    )
 
 st.caption(
     "Isabella Florez · University of Greenwich · "
