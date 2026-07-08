@@ -1,0 +1,93 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name            = "trabecular"
+version         = "0.1.0"
+description     = "Synthetic trabecular bone generation, micro-FE analysis, and DVC validation pipeline with a pluggable quantum similarity slot"
+readme          = "README.md"
+license         = { text = "MIT" }
+requires-python = ">=3.10"
+authors         = [
+    { name = "Isabella Florez", email = "isabella@florezconsult.com" },
+]
+keywords = [
+    "trabecular bone", "micro-CT", "finite element", "digital volume correlation",
+    "DVC", "quantum computing", "synthetic data", "bone morphometry",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+    "Topic :: Scientific/Engineering :: Physics",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
+
+# Core dependencies — installable without GPU or quantum hardware
+dependencies = [
+    "numpy>=1.24,<2",
+    "scipy>=1.10",
+    "scikit-image>=0.20",
+    "matplotlib>=3.7",
+    "pillow>=9.0",
+    "tifffile>=2023.1",
+    "imageio>=2.28",
+]
+
+[project.optional-dependencies]
+# Streamlit dashboard
+streamlit = [
+    "streamlit>=1.30",
+    "plotly>=5.18",
+]
+
+# Finite-element solver
+fe = [
+    "scikit-fem>=9.0",
+]
+
+# Quantum Reservoir Computing (pure-numpy, no quantum hardware needed)
+quantum = [
+    # no extra deps — uses only numpy (already in core)
+]
+
+# UMAP classical baseline (published design rule comparison)
+umap = [
+    "umap-learn>=0.5",
+]
+
+# Full development install
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "scikit-fem>=9.0",
+    "umap-learn>=0.5",
+    "streamlit>=1.30",
+    "plotly>=5.18",
+]
+
+[project.urls]
+Homepage      = "https://github.com/BellaZZ23/synthetic-trabecular-generation"
+Repository    = "https://github.com/BellaZZ23/synthetic-trabecular-generation"
+"Bug Tracker" = "https://github.com/BellaZZ23/synthetic-trabecular-generation/issues"
+
+[project.scripts]
+# CLI entry points (thin wrappers around package functions)
+# trabecular-generate = "trabecular._cli:generate"  # to be added in B step
+
+[tool.setuptools.packages.find]
+where   = ["."]
+include = ["trabecular*"]
+exclude = ["tests*", "paper*", "archive*"]
+
+[tool.setuptools.package-data]
+trabecular = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths    = ["tests"]
+addopts      = "-v --tb=short"
+filterwarnings = ["ignore::DeprecationWarning"]
