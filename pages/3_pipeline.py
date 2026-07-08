@@ -8,12 +8,15 @@ End-to-end workflow with four modes:
                          matched synthetic → FE → compare vs displacement field
   3. Augmented         — interpolate morphometrics between two DVC load steps
                          to generate synthetic volumes at intermediate states
-  4. Compare           — side-by-side synthetic vs real mechanical fields
+  4. Compare           — side-by-side synthetic vs real mechanical fields,
+                         with grid alignment before any field comparison
 
 Session state pushed:
   pipeline_gray        → 3D viewer heterogeneous E
   strain_volume_3d     → 3D viewer overlay
-  strain_registered    → marks field as co-registered
+  strain_registered    → marks field as co-registered (set after a real
+                         alignment in the Compare tab)
+  alignment_report     → human-readable summary of the last alignment
   bone_volume          → FE solver + 3D viewer
 """
 import streamlit as st
@@ -44,6 +47,13 @@ try:
     HAS_MORPH = True
 except ImportError:
     HAS_MORPH = False
+
+# scripts/ is already on sys.path from the block above, so the bare import works.
+try:
+    from volume_alignment import align_volumes
+    HAS_ALIGN = True
+except ImportError:
+    HAS_ALIGN = False
 
 st.set_page_config(page_title="Pipeline", page_icon="🔬", layout="wide")
 st.title("Integrated pipeline")
@@ -137,6 +147,28 @@ def compare_fields(syn_field, real_field):
         rval = float('nan')
     rmse = float(np.sqrt(np.mean((s[valid] - r[valid])**2)))
     return float(rval), rmse
+
+
+def checkerboard(a, b, n_tiles=8):
+    """Interleave two aligned 2D slices for a visual alignment check."""
+    th = max(a.shape[0] // n_tiles, 1)
+    tw = max(a.shape[1] // n_tiles, 1)
+    ii = np.arange(a.shape[0])[:, None] // th
+    jj = np.arange(a.shape[1])[None, :] // tw
+    return np.where(((ii + jj) % 2) == 1, b, a)
+
+
+def _fallback_common_grid(a, b):
+    """Centre-crop two volumes to a common shape, used only if
+    volume_alignment is unavailable. No resampling -- assumes similar voxels."""
+    shape = tuple(min(sa, sb) for sa, sb in zip(a.shape, b.shape))
+    def crop(arr):
+        sl = []
+        for full, want in zip(arr.shape, shape):
+            s = (full - want) // 2
+            sl.append(slice(s, s + want))
+        return arr[tuple(sl)]
+    return crop(a), crop(b)
 
 
 def load_d2im_files(specimen: str, processed_dir: Path):
@@ -781,79 +813,140 @@ with tab_compare:
     voxel_syn = st.session_state.get("pipeline_voxel_mm", 0.039)
     strain_syn = fe_syn["strain_field"]
 
-    # ── D²IM displacement comparison ──
+    # ── D²IM displacement comparison (now grid-aligned) ──
     if has_d2im_disp:
         st.markdown("#### Synthetic FE strain vs D²IM displacement magnitude")
         st.write(
-            "Comparing synthetic von Mises strain against the real DVC "
-            "displacement magnitude from D²IM. Both are normalised to [0,1] "
-            "before computing Pearson r and RMSE."
+            "The synthetic FE volume and the real D²IM/DVC volume live on "
+            "different grids — different voxel size, shape and origin — so a "
+            "direct voxel-for-voxel comparison is not valid. Both fields are "
+            "first **aligned** onto a common grid, then normalised to [0,1] "
+            "before Pearson r and RMSE are computed."
         )
 
         disp_real = st.session_state["d2im_disp"]
         vox_real  = st.session_state.get("d2im_voxel_um", 50.0) / 1000.0
-        nz_r2, ny_r2, nx_r2 = disp_real.shape
+        mask_real = st.session_state.get("d2im_mask")
 
-        # Build synthetic von Mises volume at real scan resolution
-        if mask_syn is not None:
-            nz_s, ny_s, nx_s = mask_syn.shape
+        if mask_syn is None:
+            st.warning("No synthetic mask in session — run a pipeline first.")
+        else:
             sv = strain_vol_from_fe(fe_syn, mask_syn, voxel_syn, "eps_von_mises")
 
-            # Normalise both to [0,1]
-            sv_n = (sv - sv.min()) / (sv.max() - sv.min() + 1e-8)
-            rd_n = (disp_real - disp_real.min()) / \
-                   (disp_real.max() - disp_real.min() + 1e-8)
+            # ── Alignment settings ──
+            with st.expander("Alignment settings", expanded=True):
+                a1, a2 = st.columns(2)
+                with a1:
+                    align_method = st.selectbox(
+                        "Method", ["resample", "rigid"],
+                        help="resample: bring both onto a common voxel grid + "
+                             "common field of view. rigid: also estimate a "
+                             "translation between the bone envelopes via phase "
+                             "cross-correlation and shift the synthetic volume.",
+                        key="cmp_align_method",
+                    )
+                with a2:
+                    grid_choice = st.selectbox(
+                        "Target grid", ["coarser (default)", "real D²IM", "synthetic"],
+                        help="Voxel size both volumes are resampled to. "
+                             "'coarser' avoids inventing detail.",
+                        key="cmp_align_grid",
+                    )
+                if not HAS_ALIGN:
+                    st.warning(
+                        "`volume_alignment.py` not found — falling back to a "
+                        "centre-crop on the common shape (no resampling). "
+                        "Add the module to `scripts/` for proper grid alignment."
+                    )
 
-            # Compare on common z-slice
-            mid_c = min(nz_s, nz_r2) // 2
-            comp_z = st.slider("Z-slice", 0, min(nz_s, nz_r2)-1, mid_c,
-                                key="comp_z_d2im")
+            target_vox = {"real D²IM": vox_real,
+                          "synthetic": voxel_syn}.get(grid_choice, None)
 
-            ext_s = [0, nx_s*voxel_syn, 0, ny_s*voxel_syn]
-            ext_r = [0, nx_r2*vox_real, 0, ny_r2*vox_real]
+            if HAS_ALIGN:
+                sv_a, rd_a, report = align_volumes(
+                    moving=sv, fixed=disp_real,
+                    moving_voxel_mm=voxel_syn, fixed_voxel_mm=vox_real,
+                    moving_mask=mask_syn, fixed_mask=mask_real,
+                    target_voxel_mm=target_vox,
+                    method=align_method,
+                )
+                target_vox_eff = report.target_voxel_mm
+                st.caption(f"🧭 Alignment — {report.summary()}")
+                for note in report.notes:
+                    st.caption(f"• {note}")
+            else:
+                sv_a, rd_a = _fallback_common_grid(sv, disp_real)
+                target_vox_eff = vox_real
+                report = None
+
+            # Mark as genuinely co-registered (consumed by the 3D viewer)
+            st.session_state["strain_registered"] = True
+            if report is not None:
+                st.session_state["alignment_report"] = report.summary()
+
+            nz_a, ny_a, nx_a = sv_a.shape
+
+            # Normalise the ALIGNED volumes to [0,1]
+            sv_n = (sv_a - np.nanmin(sv_a)) / (np.nanmax(sv_a) - np.nanmin(sv_a) + 1e-8)
+            rd_n = (rd_a - np.nanmin(rd_a)) / (np.nanmax(rd_a) - np.nanmin(rd_a) + 1e-8)
+
+            mid_c  = nz_a // 2
+            comp_z = st.slider("Z-slice", 0, max(nz_a - 1, 0), mid_c, key="comp_z_d2im")
+            ext_a  = [0, nx_a*target_vox_eff, 0, ny_a*target_vox_eff]
 
             cc1, cc2, cc3 = st.columns(3)
             with cc1:
-                st.caption("Synthetic von Mises (normalised)")
+                st.caption("Synthetic von Mises (aligned, normalised)")
                 fig, ax = plt.subplots(figsize=(5,5))
                 im = ax.imshow(sv_n[comp_z].T, cmap='plasma',
-                               origin='lower', extent=ext_s, vmin=0, vmax=1)
+                               origin='lower', extent=ext_a, vmin=0, vmax=1)
                 ax.set_xlabel("x [mm]"); ax.set_ylabel("y [mm]")
                 plt.colorbar(im, ax=ax)
                 st.pyplot(fig); plt.close()
-
             with cc2:
-                st.caption("D²IM displacement magnitude (normalised)")
+                st.caption("D²IM displacement (aligned, normalised)")
                 fig, ax = plt.subplots(figsize=(5,5))
                 im = ax.imshow(rd_n[comp_z].T, cmap='plasma',
-                               origin='lower', extent=ext_r, vmin=0, vmax=1)
+                               origin='lower', extent=ext_a, vmin=0, vmax=1)
                 ax.set_xlabel("x [mm]"); ax.set_ylabel("y [mm]")
                 plt.colorbar(im, ax=ax)
                 st.pyplot(fig); plt.close()
-
             with cc3:
-                st.caption("Distribution overlay")
+                st.caption("Checkerboard overlay (alignment QA)")
                 fig, ax = plt.subplots(figsize=(5,5))
-                ax.hist(sv_n.ravel(), bins=80, alpha=0.5, density=True,
-                        color="#378ADD", label="Synthetic ε_vm", edgecolor="none")
-                ax.hist(rd_n.ravel(), bins=80, alpha=0.5, density=True,
-                        color="#E85D3A", label="D²IM |u|", edgecolor="none")
-                ax.set_xlabel("Normalised value")
-                ax.set_ylabel("Density"); ax.legend()
+                cb = checkerboard(sv_n[comp_z].T, rd_n[comp_z].T, n_tiles=8)
+                ax.imshow(cb, cmap='plasma', origin='lower', extent=ext_a,
+                          vmin=0, vmax=1)
+                ax.set_xlabel("x [mm]"); ax.set_ylabel("y [mm]")
                 st.pyplot(fig); plt.close()
 
-            # Pearson r and RMSE on flattened volumes
+            st.caption(
+                "In the checkerboard, structural features should line up across "
+                "tile borders when the two fields are well aligned."
+            )
+
+            # Distribution overlay
+            st.markdown("##### Distribution overlay")
+            fig, ax = plt.subplots(figsize=(6,3.5))
+            ax.hist(sv_n.ravel(), bins=80, alpha=0.5, density=True,
+                    color="#378ADD", label="Synthetic ε_vm", edgecolor="none")
+            ax.hist(rd_n.ravel(), bins=80, alpha=0.5, density=True,
+                    color="#E85D3A", label="D²IM |u|", edgecolor="none")
+            ax.set_xlabel("Normalised value"); ax.set_ylabel("Density"); ax.legend()
+            st.pyplot(fig); plt.close()
+
+            # Metrics on the ALIGNED, common-grid volumes (now a valid comparison)
             r_val, rmse_val = compare_fields(sv_n, rd_n)
             if r_val is not None:
                 m1, m2, m3 = st.columns(3)
-                m1.metric("Pearson r",
-                          f"{r_val:.3f}",
-                          help="Correlation between synthetic strain and real displacement.")
-                m2.metric("RMSE",
-                          f"{rmse_val:.4f}",
-                          help="Root-mean-square error on normalised fields.")
+                m1.metric("Pearson r", f"{r_val:.3f}",
+                          help="Synthetic strain vs real displacement, on the aligned grid.")
+                m2.metric("RMSE", f"{rmse_val:.4f}",
+                          help="On normalised, aligned fields.")
                 m3.metric("Mech. awareness",
                           f"{st.session_state.get('ma_score', 0):.3f}")
+            else:
+                st.info("Not enough overlapping valid voxels to compute metrics.")
 
         st.divider()
 
