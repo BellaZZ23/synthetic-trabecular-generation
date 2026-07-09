@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 app.py — Landing page for the Quantum-AI micro-CT bone imaging dashboard.
 
@@ -101,7 +102,7 @@ st.markdown("""
 # ══════════════════════════════════════════════════════════════════════════════
 # HERO
 # ══════════════════════════════════════════════════════════════════════════════
-hero_l, hero_r = st.columns([5, 2], gap="large")
+hero_l, hero_r = st.columns([5, 2])
 
 with hero_l:
     st.markdown('<p class="section-label">PhD research · University of Greenwich</p>',
@@ -186,7 +187,7 @@ st.markdown("<br>", unsafe_allow_html=True)
 st.markdown('<p class="section-label">How this differs from existing generators</p>',
             unsafe_allow_html=True)
 
-diff_cols = st.columns(3, gap="medium")
+diff_cols = st.columns(3)
 
 with diff_cols[0]:
     st.markdown("""
@@ -234,7 +235,7 @@ st.markdown("<br>", unsafe_allow_html=True)
 st.markdown('<p class="section-label">Where the quantum step plugs in</p>',
             unsafe_allow_html=True)
 
-qleft, qright = st.columns([3, 2], gap="large")
+qleft, qright = st.columns([3, 2])
 
 with qleft:
     # Hybrid workflow — clean HTML instead of matplotlib
@@ -333,7 +334,7 @@ st.markdown("<br>", unsafe_allow_html=True)
 st.markdown('<p class="section-label">Quantum Reservoir Computing — what\'s new on page 5</p>',
             unsafe_allow_html=True)
 
-qrc1, qrc2, qrc3 = st.columns(3, gap="medium")
+qrc1, qrc2, qrc3 = st.columns(3)
 
 with qrc1:
     st.markdown("""
@@ -378,7 +379,7 @@ with qrc3:
 st.markdown("<br>", unsafe_allow_html=True)
 st.markdown('<p class="section-label">Pipeline status</p>', unsafe_allow_html=True)
 
-m1, m2, m3, m4 = st.columns(4, gap="medium")
+m1, m2, m3, m4 = st.columns(4)
 metrics = [
     ("95", "Tests passing", C_TEAL),
     ("< 1 vox", "DVC round-trip RMSE", C_BLUE),
