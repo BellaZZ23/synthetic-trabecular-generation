@@ -40,10 +40,14 @@ except ImportError:
 st.set_page_config(
     page_title="ROI detection", page_icon="🔍", layout="wide"
 )
-st.title("ROI detection & preprocessing")
-st.caption(
-    "Extract the trabecular compartment from the full bone mask "
-    "before registration and morphometric measurement."
+from ui_style import inject_css, page_header
+inject_css()
+page_header(
+    title="ROI detection & preprocessing",
+    subtitle="Extract the trabecular compartment from the full bone mask "
+             "before registration and morphometric measurement.",
+    label="Stage 1b · ROI",
+    color="#378ADD",
 )
 
 

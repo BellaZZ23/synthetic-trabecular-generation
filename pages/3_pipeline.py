@@ -56,8 +56,14 @@ except ImportError:
     HAS_ALIGN = False
 
 st.set_page_config(page_title="Pipeline", page_icon="🔬", layout="wide")
-st.title("Integrated pipeline")
-st.caption("Generate → Analyse → Load → Compare")
+from ui_style import inject_css, page_header
+inject_css()
+page_header(
+    title="Integrated pipeline",
+    subtitle="Generate → Analyse → Load → Compare · Grid-aligned DVC field comparison.",
+    label="Stage 4 · Compare",
+    color="#E85D3A",
+)
 
 
 # ══════════════════════════════════════════════════════════════

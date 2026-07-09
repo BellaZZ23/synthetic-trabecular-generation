@@ -24,18 +24,26 @@ from step3_generator_fe_coupling import (
     generate_grayscale,
 )
 
-st.set_page_config(page_title="Bone generator", page_icon="🦴", layout="wide")
-st.title("Bone volume generator")
-st.caption("v15.3 zero-crossing Gaussian random field — optimised trabecular defaults")
+st.set_page_config(page_title="Bone generator", page_icon="🧬", layout="wide")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+from ui_style import inject_css, page_header, info_card
+inject_css()
+page_header(
+    title="Bone volume generator",
+    subtitle="v15.3 zero-crossing Gaussian random field — morphometrically calibrated trabecular bone.",
+    label="Stage 2 · Generate",
+    color="#1D9E75",
+)
 
 # ── Targets from Data Loader ──────────────────────────────────
 real_targets = st.session_state.get("target_from_real")
 if real_targets:
-    st.info(
-        f"📐 Targets from data loader: "
-        f"BV/TV={real_targets['bvtv']:.3f}, "
-        f"Tb.Th={real_targets['tbth_um']:.0f} µm, "
-        f"volume={real_targets['nx']}×{real_targets['ny']}×{real_targets['nz']}"
+    info_card(
+        body=f"BV/TV = <b>{real_targets['bvtv']:.3f}</b> &nbsp;·&nbsp; "
+             f"Tb.Th = <b>{real_targets['tbth_um']:.0f} µm</b> &nbsp;·&nbsp; "
+             f"Volume = <b>{real_targets['nx']}×{real_targets['ny']}×{real_targets['nz']}</b>",
+        title="📐 Morphometric targets from Data Loader",
+        color="#1D9E75",
     )
     default_bvtv  = real_targets["bvtv"]
     default_tbth  = int(real_targets["tbth_um"])

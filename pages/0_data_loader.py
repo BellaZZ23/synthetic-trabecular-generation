@@ -47,8 +47,16 @@ except ImportError:
     HAS_BONEJ = False
 
 st.set_page_config(page_title="Data loader", page_icon="📂", layout="wide")
-st.title("Data loader")
-st.caption("Load real micro-CT volumes for parameter extraction or validation")
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+from ui_style import inject_css, page_header
+inject_css()
+page_header(
+    title="Data loader",
+    subtitle="Load real micro-CT volumes for parameter extraction or validation.",
+    label="Stage 1 · Data",
+    color="#378ADD",
+)
 
 
 # ══════════════════════════════════════════════════════════════

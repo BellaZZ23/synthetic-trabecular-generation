@@ -17,8 +17,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "fe_coupling"))
 from step3_generator_fe_coupling import run_fe_analysis
 
 st.set_page_config(page_title="3D viewer", page_icon="🧊", layout="wide")
-st.title("3D viewer & strain mapping")
-st.caption("Visualise bone structure and mechanical fields in 3D")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+from ui_style import inject_css, page_header
+inject_css()
+page_header(
+    title="3D viewer & strain mapping",
+    subtitle="Interactive 3D bone surface — map strain and displacement fields onto geometry.",
+    label="Stage 6 · Visualise",
+    color="#C8BFA9",
+)
 
 
 # ══════════════════════════════════════════════════════════════

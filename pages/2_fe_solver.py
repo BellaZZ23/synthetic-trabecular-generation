@@ -24,9 +24,16 @@ try:
 except ImportError:
     HAS_TECHMESH = False
 
-st.set_page_config(page_title="FE solver", page_icon="🔧", layout="wide")
-st.title("Micro-FE solver")
-st.caption("Uniaxial compression, tension, and torque with strain field extraction")
+st.set_page_config(page_title="FE solver", page_icon="⚙️", layout="wide")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+from ui_style import inject_css, page_header
+inject_css()
+page_header(
+    title="Micro-FE solver",
+    subtitle="Uniaxial compression, tension, and torque — with strain field extraction and apparent modulus.",
+    label="Stage 3 · Analyse",
+    color="#E85D3A",
+)
 
 
 # ══════════════════════════════════════════════════════════════

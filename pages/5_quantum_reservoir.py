@@ -24,10 +24,14 @@ except ImportError as e:
     _qrc_err = str(e)
 
 st.set_page_config(page_title="Quantum Reservoir", page_icon="⚛️", layout="wide")
-st.title("⚛️ Quantum Reservoir Computing")
-st.caption(
-    "Fixed random quantum reservoir · trained linear readout · "
-    "entanglement sweet spot · temporal load-sequence mode"
+from ui_style import inject_css, page_header
+inject_css()
+page_header(
+    title="Quantum Reservoir Computing",
+    subtitle="Fixed random reservoir · trained linear readout · "
+             "entanglement sweet spot · temporal load-sequence mode.",
+    label="Stage 5 · Quantum",
+    color="#7F77DD",
 )
 
 C_BLUE   = "#378ADD"
