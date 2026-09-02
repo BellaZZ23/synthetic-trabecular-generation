@@ -181,9 +181,30 @@ else:
 st.sidebar.header("FE parameters")
 load_type = st.sidebar.radio("Load case", ["compression", "tension", "torque"])
 
-E_bone = st.sidebar.number_input("E_bone (MPa)", value=18000.0, step=1000.0)
-nu     = st.sidebar.number_input("Poisson ratio", value=0.3, step=0.05,
-                                  min_value=0.0, max_value=0.49)
+_MAT = {
+    "Cortical bone":      {"E": 18000, "nu": 0.30},
+    "Trabecular tissue":  {"E": 10000, "nu": 0.30},
+    "Cartilage":          {"E": 10,    "nu": 0.40},
+    "PLA polymer":        {"E": 3500,  "nu": 0.36},
+    "Aluminium alloy":    {"E": 70000, "nu": 0.33},
+    "Foam (session)":     {"E": None,  "nu": 0.30},
+    "Custom":             {"E": None,  "nu": None},
+}
+_mat = st.sidebar.selectbox("Material preset", list(_MAT.keys()), key="fe_mat_preset")
+if _mat == "Foam (session)":
+    _E_def = float(st.session_state.get("fe_E_tissue_MPa",
+             st.session_state.get("foam_E_MPa", 200.0)))
+    _lbl   = st.session_state.get("fe_material_label", "foam from session")
+    st.sidebar.caption(f"🧽 {_lbl}")
+elif _MAT[_mat]["E"] is not None:
+    _E_def = float(_MAT[_mat]["E"])
+else:
+    _E_def = float(st.session_state.get("fe_E_tissue_MPa", 18000.0))
+
+E_bone = st.sidebar.number_input("E_tissue (MPa)", value=_E_def, step=500.0)
+nu     = st.sidebar.number_input("Poisson ratio",
+    value=_MAT[_mat]["nu"] if _MAT[_mat]["nu"] is not None else 0.30,
+    step=0.05, min_value=0.0, max_value=0.49)
 
 if load_type == "torque":
     strain_deg = st.sidebar.slider("Rotation (deg)", 0.1, 5.0, 0.57, 0.01)
@@ -258,6 +279,7 @@ run_btn = st.sidebar.button(
 # ══════════════════════════════════════════════════════════════
 
 if run_btn:
+    _t0 = time.time()
 
     # Apply subsample
     run_mask   = bone_mask[::fe_sub, ::fe_sub, ::fe_sub]
@@ -308,9 +330,11 @@ if run_btn:
     st.session_state["strain_registered"] = True
     st.session_state["fe_voxel_mm_3d"]   = run_voxel
 
+    _wall = time.time() - _t0
     st.success(
-        f"Done — {fe['n_elements']:,} elements | "
-        f"solve {fe['solve_time']:.1f}s | "
+        f"✅ Done — {fe['n_elements']:,} elements · "
+        f"wall time {_wall:.1f} s · "
+        f"solve {fe['solve_time']:.1f} s · "
         f"solver: {fe.get('solver','voxel')}"
     )
 

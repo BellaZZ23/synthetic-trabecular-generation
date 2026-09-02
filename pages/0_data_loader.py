@@ -97,6 +97,28 @@ def register_volumes_rigid(fixed_np: np.ndarray, moving_np: np.ndarray,
         registered_np = fixed_np.astype(np.float32)
         return registered_np, transform
 
+    # ── Centre-of-mass pre-alignment ──────────────────────────
+    # Shift centres of mass into register before phase correlation;
+    # this handles large initial offsets robustly without needing overlap.
+    def _com(arr):
+        arr = np.clip(arr.astype(np.float64), 0, None)
+        total = arr.sum() + 1e-12
+        zz, yy, xx = np.meshgrid(
+            np.arange(arr.shape[0]),
+            np.arange(arr.shape[1]),
+            np.arange(arr.shape[2]),
+            indexing="ij",
+        )
+        cz = (zz * arr).sum() / total
+        cy = (yy * arr).sum() / total
+        cx = (xx * arr).sum() / total
+        return np.array([cz, cy, cx])
+
+    com_f = _com(fixed_np)
+    com_m = _com(moving_np)
+    com_shift_vox = com_f - com_m          # shift moving→fixed in voxels
+    com_shift_mm  = com_shift_vox * voxel_um * 1e-3
+
     # ── Phase-correlation translation estimate ─────────────────
     # Project to 2D (max-intensity along Z) for robust estimation
     f_proj = fixed_np.max(axis=0).astype(np.float32)
@@ -118,8 +140,13 @@ def register_volumes_rigid(fixed_np: np.ndarray, moving_np: np.ndarray,
     dx_mm = float(dx_vox) * voxel_um * 1e-3
 
     # ── Apply via SimpleITK TranslationTransform ───────────────
+    # Combine CoM pre-alignment with phase-correlation refinement
+    dx_mm_total = com_shift_mm[2] + dx_mm
+    dy_mm_total = com_shift_mm[1] + dy_mm
+    dz_mm_total = com_shift_mm[0]
+
     transform = sitk.TranslationTransform(3)
-    transform.SetOffset([dx_mm, dy_mm, 0.0])
+    transform.SetOffset([dx_mm_total, dy_mm_total, dz_mm_total])
 
     fixed_sitk  = make_sitk(fixed_np)
     moving_sitk = make_sitk(moving_np)
@@ -745,7 +772,18 @@ if volume is not None:
                             st.session_state["strain_label_3d"] = strain_component_label
                             st.session_state["strain_registered"] = True
 
-                    st.success("Registration complete.")
+                    # NCC quality score
+                    reg = registered_vol
+                    fix = volume
+                    min_sz = tuple(min(a, b) for a, b in zip(fix.shape, reg.shape))
+                    f_c = fix[:min_sz[0], :min_sz[1], :min_sz[2]].astype(np.float64)
+                    r_c = reg[:min_sz[0], :min_sz[1], :min_sz[2]].astype(np.float64)
+                    f_c -= f_c.mean(); r_c -= r_c.mean()
+                    denom_ncc = (np.linalg.norm(f_c) * np.linalg.norm(r_c)) + 1e-12
+                    ncc_val = float(np.sum(f_c * r_c) / denom_ncc)
+                    quality = "🟢 Good" if ncc_val > 0.7 else ("🟡 Fair" if ncc_val > 0.4 else "🔴 Poor")
+                    st.success(f"Registration complete. NCC = {ncc_val:.3f} {quality}")
+                    st.session_state["registration_ncc"] = ncc_val
                 except Exception as e:
                     st.error(f"Registration failed: {e}")
 
@@ -798,7 +836,14 @@ if volume is not None:
                 plt.colorbar(im, ax=ax, label="Intensity difference")
                 st.pyplot(fig); plt.close()
                 rmse = float(np.sqrt(np.mean(diff**2)))
-                st.metric("RMSE (slice)", f"{rmse:.1f}", help="Lower = better alignment")
+                _ncc_stored = st.session_state.get("registration_ncc")
+                _mc1, _mc2 = st.columns(2)
+                _mc1.metric("RMSE (slice)", f"{rmse:.1f}", help="Lower = better alignment")
+                if _ncc_stored is not None:
+                    _qual = "Good ✅" if _ncc_stored > 0.7 else ("Fair ⚠️" if _ncc_stored > 0.4 else "Poor ❌")
+                    _mc2.metric("NCC (volume)", f"{_ncc_stored:.3f}",
+                                help="Normalised cross-correlation 0→1. >0.7 = good alignment.")
+                    st.caption(f"Alignment quality: **{_qual}**")
 
             # Registered strain preview
             if "strain_volume_3d" in st.session_state and st.session_state.get("strain_registered"):

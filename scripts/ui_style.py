@@ -243,3 +243,32 @@ def metric_row(metrics: list[tuple[str, str, str]]) -> None:
 def badge(text: str, style: str = "blue") -> str:
     """Return an inline HTML badge string. style: green/blue/purple/amber/red."""
     return f'<span class="badge badge-{style}">{text}</span>'
+
+
+def sidebar_nav_sections() -> None:
+    """
+    Inject visual section grouping labels into the sidebar.
+    Call from app.py (or any page) once per run.
+    The labels appear above the auto-generated page links using
+    st.sidebar.markdown with zero-height spacers — no st.navigation
+    required, so it works on any Streamlit version.
+    """
+    st.sidebar.markdown(
+        """
+<style>
+/* ── Sidebar section headers ── */
+.nav-section {
+    font-size: 0.62rem;
+    font-weight: 800;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: #aaa;
+    padding: 0.55rem 0 0.1rem 0.2rem;
+    border-top: 1px solid #e5e7ec;
+    margin-top: 0.4rem;
+}
+.nav-section:first-child { border-top: none; margin-top: 0; }
+</style>
+""",
+        unsafe_allow_html=True,
+    )

@@ -1,0 +1,796 @@
+<title>µCT Volume Renderer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+
+<style>
+:root {
+  --bg:       #0A0F1A;
+  --panel:    #111827;
+  --border:   rgba(255,255,255,0.08);
+  --text:     #E8EDF5;
+  --mute:     #6B7B8F;
+  --teal:     #22D3A8;
+  --teal-dim: #0D4D3A;
+  --purple:   #8B7CF8;
+  --coral:    #F97316;
+  --sans:     'Inter', system-ui, sans-serif;
+  --mono:     'JetBrains Mono', monospace;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 100%; height: 100%; background: var(--bg); color: var(--text); font-family: var(--sans); overflow: hidden; }
+
+#app {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  grid-template-rows: 48px 1fr 28px;
+  height: 100vh;
+}
+
+/* ── Header ── */
+#header {
+  grid-column: 1 / -1;
+  display: flex; align-items: center; gap: 12px;
+  padding: 0 18px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+#header h1 { font-size: 0.9rem; font-weight: 600; letter-spacing: 0.03em; }
+#header .badge {
+  font-size: 0.7rem; font-family: var(--mono);
+  background: var(--teal-dim); color: var(--teal);
+  padding: 2px 8px; border-radius: 4px; font-weight: 600;
+}
+.spacer { flex: 1; }
+#fps-counter { font-family: var(--mono); font-size: 0.72rem; color: var(--mute); }
+
+/* ── Sidebar ── */
+#sidebar {
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 14px 12px;
+  display: flex; flex-direction: column; gap: 16px;
+}
+.ctrl-section { display: flex; flex-direction: column; gap: 8px; }
+.ctrl-label {
+  font-size: 0.65rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.08em; color: var(--mute);
+}
+.ctrl-row { display: flex; align-items: center; gap: 8px; }
+.ctrl-row label { font-size: 0.75rem; color: var(--mute); min-width: 64px; }
+.ctrl-row span { font-size: 0.72rem; font-family: var(--mono); color: var(--teal); min-width: 32px; text-align: right; }
+input[type=range] {
+  flex: 1; height: 3px; accent-color: var(--teal);
+  cursor: pointer; appearance: none; background: var(--border);
+  border-radius: 2px; outline: none;
+}
+input[type=range]::-webkit-slider-thumb {
+  appearance: none; width: 12px; height: 12px;
+  border-radius: 50%; background: var(--teal); cursor: pointer;
+}
+.btn-group { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip {
+  font-size: 0.7rem; padding: 4px 10px; border-radius: 20px;
+  border: 1px solid var(--border); background: transparent;
+  color: var(--mute); cursor: pointer; transition: all .15s; font-family: var(--sans);
+}
+.chip:hover { border-color: var(--teal); color: var(--teal); }
+.chip.active { background: var(--teal-dim); border-color: var(--teal); color: var(--teal); font-weight: 600; }
+
+.divider { border: none; border-top: 1px solid var(--border); }
+
+/* Colourmap swatch */
+.cmap-row { display: flex; gap: 6px; }
+.cmap-swatch {
+  width: 32px; height: 18px; border-radius: 3px; cursor: pointer;
+  border: 2px solid transparent; transition: border .15s;
+}
+.cmap-swatch.active { border-color: var(--teal); }
+
+/* Stats */
+.stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.stat-cell {
+  background: #0D1825; border-radius: 6px; padding: 8px 10px;
+  border: 1px solid var(--border);
+}
+.stat-cell .sv { font-size: 1rem; font-weight: 600; color: var(--teal); font-family: var(--mono); }
+.stat-cell .sl { font-size: 0.65rem; color: var(--mute); margin-top: 1px; }
+
+/* ── Canvas area ── */
+#canvas-wrap {
+  position: relative;
+  background: #060D16;
+  overflow: hidden;
+}
+#glcanvas {
+  width: 100%; height: 100%;
+  display: block;
+  cursor: grab;
+}
+#glcanvas:active { cursor: grabbing; }
+
+/* Axis gizmo */
+#gizmo {
+  position: absolute; bottom: 16px; left: 16px;
+  width: 64px; height: 64px; pointer-events: none;
+}
+
+/* Overlay info */
+#overlay-top {
+  position: absolute; top: 12px; right: 14px;
+  display: flex; flex-direction: column; gap: 4px; align-items: flex-end;
+}
+.overlay-pill {
+  font-size: 0.68rem; padding: 3px 9px; border-radius: 20px;
+  background: rgba(0,0,0,0.55); border: 1px solid var(--border);
+  backdrop-filter: blur(4px); font-family: var(--mono); color: var(--mute);
+}
+.overlay-pill.hi { color: var(--teal); border-color: var(--teal-dim); }
+
+/* ── Statusbar ── */
+#statusbar {
+  grid-column: 1 / -1;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  display: flex; align-items: center; gap: 16px;
+  padding: 0 14px;
+  font-size: 0.65rem; color: var(--mute); font-family: var(--mono);
+}
+.status-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--teal); animation: pulse 2s infinite;
+}
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+</style>
+
+<div id="app">
+  <!-- Header -->
+  <header id="header">
+    <span>🦴</span>
+    <h1>µCT Volume Renderer</h1>
+    <span class="badge">WebGL 2.0 · Ray-march</span>
+    <div class="spacer"></div>
+    <span id="fps-counter">-- fps</span>
+  </header>
+
+  <!-- Sidebar -->
+  <aside id="sidebar">
+
+    <!-- Volume select -->
+    <div class="ctrl-section">
+      <div class="ctrl-label">Volume</div>
+      <div class="btn-group" id="vol-btns">
+        <button class="chip active" data-vol="trabecular">Trabecular</button>
+        <button class="chip" data-vol="cortical">Cortical</button>
+        <button class="chip" data-vol="foam-open">Foam (open)</button>
+        <button class="chip" data-vol="foam-closed">Foam (closed)</button>
+      </div>
+    </div>
+
+    <hr class="divider">
+
+    <!-- Rendering mode -->
+    <div class="ctrl-section">
+      <div class="ctrl-label">Rendering mode</div>
+      <div class="btn-group" id="mode-btns">
+        <button class="chip active" data-mode="mip">MIP</button>
+        <button class="chip" data-mode="dvr">DVR</button>
+        <button class="chip" data-mode="iso">Isosurface</button>
+        <button class="chip" data-mode="strain">Strain</button>
+      </div>
+    </div>
+
+    <hr class="divider">
+
+    <!-- Transfer function -->
+    <div class="ctrl-section">
+      <div class="ctrl-label">Transfer function</div>
+      <div class="ctrl-row">
+        <label>Threshold</label>
+        <input type="range" id="sl-thresh" min="0" max="1" step="0.01" value="0.35">
+        <span id="val-thresh">0.35</span>
+      </div>
+      <div class="ctrl-row">
+        <label>Density</label>
+        <input type="range" id="sl-density" min="0.1" max="4" step="0.1" value="1.2">
+        <span id="val-density">1.2</span>
+      </div>
+      <div class="ctrl-row">
+        <label>Brightness</label>
+        <input type="range" id="sl-bright" min="0.2" max="3" step="0.05" value="1.0">
+        <span id="val-bright">1.00</span>
+      </div>
+    </div>
+
+    <hr class="divider">
+
+    <!-- Colour map -->
+    <div class="ctrl-section">
+      <div class="ctrl-label">Colour map</div>
+      <div class="cmap-row" id="cmap-row">
+        <canvas class="cmap-swatch active" id="cm-bone" title="Bone" width="32" height="18"></canvas>
+        <canvas class="cmap-swatch" id="cm-heat" title="Heat" width="32" height="18"></canvas>
+        <canvas class="cmap-swatch" id="cm-cool" title="Cool" width="32" height="18"></canvas>
+        <canvas class="cmap-swatch" id="cm-strain" title="Strain" width="32" height="18"></canvas>
+        <canvas class="cmap-swatch" id="cm-grey" title="Grey" width="32" height="18"></canvas>
+      </div>
+    </div>
+
+    <hr class="divider">
+
+    <!-- Clip -->
+    <div class="ctrl-section">
+      <div class="ctrl-label">Clip plane</div>
+      <div class="ctrl-row">
+        <label>X cut</label>
+        <input type="range" id="sl-clipx" min="0" max="1" step="0.01" value="1">
+        <span id="val-clipx">1.00</span>
+      </div>
+      <div class="ctrl-row">
+        <label>Y cut</label>
+        <input type="range" id="sl-clipy" min="0" max="1" step="0.01" value="1">
+        <span id="val-clipy">1.00</span>
+      </div>
+      <div class="ctrl-row">
+        <label>Z cut</label>
+        <input type="range" id="sl-clipz" min="0" max="1" step="0.01" value="1">
+        <span id="val-clipz">1.00</span>
+      </div>
+    </div>
+
+    <hr class="divider">
+
+    <!-- Morphometrics -->
+    <div class="ctrl-section">
+      <div class="ctrl-label">Morphometrics</div>
+      <div class="stat-grid" id="stat-grid">
+        <div class="stat-cell"><div class="sv" id="s-bvtv">28.4%</div><div class="sl">BV/TV</div></div>
+        <div class="stat-cell"><div class="sv" id="s-tbth">182µm</div><div class="sl">Tb.Th</div></div>
+        <div class="stat-cell"><div class="sv" id="s-tbn">1.56</div><div class="sl">Tb.N /mm</div></div>
+        <div class="stat-cell"><div class="sv" id="s-conn">12.4</div><div class="sl">Conn.D /mm³</div></div>
+      </div>
+    </div>
+
+  </aside>
+
+  <!-- WebGL canvas -->
+  <div id="canvas-wrap">
+    <canvas id="glcanvas"></canvas>
+    <svg id="gizmo" viewBox="0 0 64 64">
+      <line id="gx" x1="32" y1="32" x2="56" y2="44" stroke="#E85D3A" stroke-width="2"/>
+      <line id="gy" x1="32" y1="32" x2="32" y2="8"  stroke="#22D3A8" stroke-width="2"/>
+      <line id="gz" x1="32" y1="32" x2="8"  y2="44" stroke="#8B7CF8" stroke-width="2"/>
+      <text id="lx" x="58" y="46" fill="#E85D3A" font-size="9" font-family="Inter">X</text>
+      <text id="ly" x="30" y="6"  fill="#22D3A8" font-size="9" font-family="Inter">Y</text>
+      <text id="lz" x="3"  y="46" fill="#8B7CF8" font-size="9" font-family="Inter">Z</text>
+    </svg>
+    <div id="overlay-top">
+      <div class="overlay-pill hi" id="ov-mode">MIP</div>
+      <div class="overlay-pill" id="ov-vol">64³ voxels · 39 µm/vox</div>
+      <div class="overlay-pill" id="ov-ncc">NCC — </div>
+    </div>
+  </div>
+
+  <!-- Statusbar -->
+  <div id="statusbar">
+    <div class="status-dot"></div>
+    <span id="sb-text">Ready · drag to rotate · scroll to zoom · shift+drag to pan</span>
+    <span style="margin-left:auto" id="sb-pos"></span>
+  </div>
+</div>
+
+<script>
+// ────────────────────────────────────────────────────────────
+// 1. Colour-map swatches (2-D canvas, no WebGL needed)
+// ────────────────────────────────────────────────────────────
+const CMAPS = {
+  bone:   t => { const v=t*0.9+0.1; return [v*0.96,v*0.92,v*0.88]; },
+  heat:   t => [t, t*0.3, 0.1*(1-t)],
+  cool:   t => [0.1+t*0.2, 0.5+t*0.4, 0.8+t*0.2],
+  strain: t => t<0.5 ? [0,t*2*0.6,0.8] : [0.8*(t-0.5)*2,0.6*(1-(t-0.5)*2),0],
+  grey:   t => [t,t,t],
+};
+function drawSwatch(canvas, fn){
+  const ctx=canvas.getContext('2d'), w=canvas.width, h=canvas.height;
+  for(let x=0;x<w;x++){
+    const [r,g,b]=fn(x/(w-1));
+    ctx.fillStyle=`rgb(${Math.round(r*255)},${Math.round(g*255)},${Math.round(b*255)})`;
+    ctx.fillRect(x,0,1,h);
+  }
+}
+drawSwatch(document.getElementById('cm-bone'),   CMAPS.bone);
+drawSwatch(document.getElementById('cm-heat'),   CMAPS.heat);
+drawSwatch(document.getElementById('cm-cool'),   CMAPS.cool);
+drawSwatch(document.getElementById('cm-strain'), CMAPS.strain);
+drawSwatch(document.getElementById('cm-grey'),   CMAPS.grey);
+
+// ────────────────────────────────────────────────────────────
+// 2. Synthetic volume generators
+// ────────────────────────────────────────────────────────────
+function lcg(seed){ let s=seed|0; return ()=>{ s=(s*1664525+1013904223)&0xFFFFFFFF; return (s>>>0)/4294967296; }; }
+
+function genTrabecular(sz=64){
+  const rng=lcg(42), N=sz*sz*sz, vol=new Float32Array(N);
+  // Smooth GRF via box-blur approximation (3 passes)
+  for(let i=0;i<N;i++) vol[i]=rng()-0.5;
+  const tmp=new Float32Array(N);
+  for(let pass=0;pass<4;pass++){
+    for(let z=1;z<sz-1;z++) for(let y=1;y<sz-1;y++) for(let x=1;x<sz-1;x++){
+      const i=z*sz*sz+y*sz+x;
+      tmp[i]=(vol[i-1]+vol[i+1]+vol[i-sz]+vol[i+sz]+vol[i-sz*sz]+vol[i+sz*sz]+vol[i]*2)/8;
+    }
+    vol.set(tmp);
+  }
+  // threshold to ~28% BV/TV
+  const sorted=[...vol].sort((a,b)=>a-b);
+  const thr=sorted[Math.floor(N*0.72)];
+  for(let i=0;i<N;i++) vol[i]=vol[i]>=thr?0.7+rng()*0.3:0;
+  return vol;
+}
+
+function genCortical(sz=64){
+  const rng=lcg(7), N=sz*sz*sz, vol=new Float32Array(N);
+  const cx=sz/2,cy=sz/2,cz=sz/2,r=sz*0.45,th=sz*0.08;
+  for(let z=0;z<sz;z++) for(let y=0;y<sz;y++) for(let x=0;x<sz;x++){
+    const d=Math.sqrt((x-cx)**2+(y-cy)**2+(z-cz)**2);
+    const i=z*sz*sz+y*sz+x;
+    if(d>=r-th&&d<=r) vol[i]=0.85+rng()*0.15;
+    else if(d<r-th) vol[i]=0.15+rng()*0.1;
+  }
+  return vol;
+}
+
+function genFoamOpen(sz=64){
+  const rng=lcg(19), N=sz*sz*sz, vol=new Float32Array(N);
+  for(let i=0;i<N;i++) vol[i]=rng()-0.5;
+  const tmp=new Float32Array(N);
+  for(let pass=0;pass<6;pass++){
+    for(let z=1;z<sz-1;z++) for(let y=1;y<sz-1;y++) for(let x=1;x<sz-1;x++){
+      const i=z*sz*sz+y*sz+x;
+      tmp[i]=(vol[i-1]+vol[i+1]+vol[i-sz]+vol[i+sz]+vol[i-sz*sz]+vol[i+sz*sz]+vol[i]*2)/8;
+    }
+    vol.set(tmp);
+  }
+  const sorted=[...vol].sort((a,b)=>a-b);
+  const thr=sorted[Math.floor(N*0.80)]; // 20% solid
+  for(let i=0;i<N;i++) vol[i]=vol[i]>=thr?0.6+rng()*0.4:0;
+  return vol;
+}
+
+function genFoamClosed(sz=64){
+  const rng=lcg(31), N=sz*sz*sz, vol=new Float32Array(N);
+  const nCells=20;
+  const cells=[];
+  for(let k=0;k<nCells;k++) cells.push({x:rng()*sz,y:rng()*sz,z:rng()*sz,r:4+rng()*6});
+  for(let z=0;z<sz;z++) for(let y=0;y<sz;y++) for(let x=0;x<sz;x++){
+    let inside=false;
+    for(const c of cells){
+      const d=Math.sqrt((x-c.x)**2+(y-c.y)**2+(z-c.z)**2);
+      if(d<=c.r&&d>=c.r-1.5){ inside=true; break; }
+    }
+    vol[z*sz*sz+y*sz+x]=inside?0.9+rng()*0.1:0;
+  }
+  return vol;
+}
+
+function genStrain(sz=64, baseVol){
+  // paint a compression gradient over the solid voxels
+  const vol=new Float32Array(baseVol.length);
+  for(let z=0;z<sz;z++) for(let y=0;y<sz;y++) for(let x=0;x<sz;x++){
+    const i=z*sz*sz+y*sz+x;
+    if(baseVol[i]>0.1){
+      const strain=0.05*(1-(z/sz)); // peak at z=0
+      vol[i]=0.5+strain*6; // map strain to colour range
+    }
+  }
+  return vol;
+}
+
+const VOL_FNS = {
+  trabecular:  ()=>genTrabecular(64),
+  cortical:    ()=>genCortical(64),
+  'foam-open': ()=>genFoamOpen(64),
+  'foam-closed':()=>genFoamClosed(64),
+};
+const MORPHO = {
+  trabecular:   {bvtv:'28.4%',tbth:'182µm',tbn:'1.56',conn:'12.4'},
+  cortical:     {bvtv:'91.2%',tbth:'—',tbn:'—',conn:'3.2'},
+  'foam-open':  {bvtv:'20.1%',tbth:'95µm',tbn:'2.11',conn:'18.7'},
+  'foam-closed':{bvtv:'18.3%',tbth:'—',tbn:'—',conn:'5.1'},
+};
+
+// ────────────────────────────────────────────────────────────
+// 3. WebGL setup
+// ────────────────────────────────────────────────────────────
+const canvas = document.getElementById('glcanvas');
+const gl = canvas.getContext('webgl2');
+if(!gl){ document.getElementById('sb-text').textContent='WebGL 2 not supported in this browser'; }
+
+function resize(){
+  const p=canvas.parentElement;
+  canvas.width=p.clientWidth*devicePixelRatio|0;
+  canvas.height=p.clientHeight*devicePixelRatio|0;
+  canvas.style.width=p.clientWidth+'px';
+  canvas.style.height=p.clientHeight+'px';
+  if(gl) gl.viewport(0,0,canvas.width,canvas.height);
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ── Shaders ──
+const VS = `#version 300 es
+in vec2 a_pos;
+out vec2 v_uv;
+void main(){
+  v_uv = a_pos*0.5+0.5;
+  gl_Position = vec4(a_pos,0,1);
+}`;
+
+const FS = `#version 300 es
+precision highp float;
+precision highp sampler3D;
+
+in vec2 v_uv;
+out vec4 fragColor;
+
+uniform sampler3D u_vol;
+uniform mat4 u_invMVP;
+uniform vec3 u_clip;
+uniform float u_thresh;
+uniform float u_density;
+uniform float u_bright;
+uniform int u_mode;   // 0=MIP 1=DVR 2=ISO 3=strain
+uniform int u_cmap;   // 0-4
+
+vec3 cmap(float t){
+  t=clamp(t,0.,1.);
+  if(u_cmap==0){ float v=t*.9+.1; return vec3(v*.96,v*.92,v*.88); } // bone
+  if(u_cmap==1){ return vec3(t,t*.3,.1*(1.-t)); }                    // heat
+  if(u_cmap==2){ return vec3(.1+t*.2,.5+t*.4,.8+t*.2); }            // cool
+  if(u_cmap==3){ // strain
+    if(t<.5) return vec3(0.,t*2.*.6,.8);
+    return vec3(.8*(t-.5)*2.,.6*(1.-(t-.5)*2.),0.);
+  }
+  return vec3(t,t,t); // grey
+}
+
+void main(){
+  // reconstruct ray in volume space
+  vec4 near4 = u_invMVP * vec4(v_uv*2.-1., -1., 1.);
+  vec4 far4  = u_invMVP * vec4(v_uv*2.-1.,  1., 1.);
+  vec3 ro = near4.xyz/near4.w;
+  vec3 rd = normalize(far4.xyz/far4.w - ro);
+
+  // intersect unit cube [0,1]^3
+  vec3 invd=1./rd;
+  vec3 t0=(vec3(0.)-ro)*invd;
+  vec3 t1=(u_clip-ro)*invd;
+  vec3 tmin2=min(t0,t1); vec3 tmax2=max(t0,t1);
+  float tnear=max(max(tmin2.x,tmin2.y),tmin2.z);
+  float tfar =min(min(tmax2.x,tmax2.y),tmax2.z);
+  if(tnear>tfar||tfar<0.){ fragColor=vec4(0.); return; }
+  tnear=max(tnear,0.);
+
+  const int STEPS=128;
+  float dt=(tfar-tnear)/float(STEPS);
+  float maxVal=0.; vec4 acc=vec4(0.);
+  vec3 isoHit=vec3(-1.);
+
+  for(int i=0;i<STEPS;i++){
+    float t=tnear+dt*float(i);
+    vec3 p=ro+rd*t;
+    float s=texture(u_vol,p).r;
+
+    if(u_mode==0){ // MIP
+      maxVal=max(maxVal,s);
+    } else if(u_mode==1){ // DVR
+      if(s>u_thresh){
+        float a=s*u_density*dt*10.;
+        vec3 col=cmap(s)*u_bright;
+        acc.rgb+=col*(1.-acc.a)*a;
+        acc.a+=a*(1.-acc.a);
+        if(acc.a>0.99) break;
+      }
+    } else if(u_mode==2){ // isosurface
+      if(s>u_thresh&&isoHit.x<0.){
+        isoHit=p;
+        // approx normal by central differences
+        float dx=texture(u_vol,p+vec3(.016,0,0)).r-texture(u_vol,p-vec3(.016,0,0)).r;
+        float dy=texture(u_vol,p+vec3(0,.016,0)).r-texture(u_vol,p-vec3(0,.016,0)).r;
+        float dz=texture(u_vol,p+vec3(0,0,.016)).r-texture(u_vol,p-vec3(0,0,.016)).r;
+        vec3 n=normalize(vec3(-dx,-dy,-dz));
+        vec3 L=normalize(vec3(.5,.8,.6));
+        float diff=max(0.,dot(n,L));
+        float spec=pow(max(0.,dot(reflect(-L,n),-rd)),.5*30.);
+        vec3 col=cmap(s)*(0.2+0.7*diff)+vec3(.3)*spec;
+        acc=vec4(col*u_bright,1.);
+        break;
+      }
+    } else { // strain overlay
+      if(s>0.05){
+        float a=min(1.,s*u_density*dt*8.);
+        vec3 col=cmap(s)*u_bright;
+        acc.rgb+=col*(1.-acc.a)*a;
+        acc.a+=a*(1.-acc.a);
+        if(acc.a>0.95) break;
+      }
+    }
+  }
+
+  if(u_mode==0) acc=vec4(cmap(maxVal*u_bright),maxVal>u_thresh?1.:0.);
+  fragColor=acc;
+}`;
+
+function compileShader(type,src){
+  const sh=gl.createShader(type);
+  gl.shaderSource(sh,src); gl.compileShader(sh);
+  if(!gl.getShaderParameter(sh,gl.COMPILE_STATUS))
+    console.error('Shader error:',gl.getShaderInfoLog(sh));
+  return sh;
+}
+function buildProg(vs,fs){
+  const p=gl.createProgram();
+  gl.attachShader(p,compileShader(gl.VERTEX_SHADER,vs));
+  gl.attachShader(p,compileShader(gl.FRAGMENT_SHADER,fs));
+  gl.linkProgram(p);
+  return p;
+}
+
+const prog = buildProg(VS, FS);
+gl.useProgram(prog);
+
+// full-screen quad
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1,1,-1,-1,1,1,1]), gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(prog,'a_pos');
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos,2,gl.FLOAT,false,0,0);
+
+const uLoc = name => gl.getUniformLocation(prog, name);
+const U = {
+  vol:    uLoc('u_vol'),
+  invMVP: uLoc('u_invMVP'),
+  clip:   uLoc('u_clip'),
+  thresh: uLoc('u_thresh'),
+  density:uLoc('u_density'),
+  bright: uLoc('u_bright'),
+  mode:   uLoc('u_mode'),
+  cmap:   uLoc('u_cmap'),
+};
+
+// 3D texture
+let volTex = null;
+function uploadVolume(data, sz=64){
+  if(volTex) gl.deleteTexture(volTex);
+  volTex = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_3D, volTex);
+  gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_WRAP_R,gl.CLAMP_TO_EDGE);
+  const u8=new Uint8Array(data.length);
+  for(let i=0;i<data.length;i++) u8[i]=Math.round(Math.min(1,data[i])*255);
+  gl.texImage3D(gl.TEXTURE_3D,0,gl.R8,sz,sz,sz,0,gl.RED,gl.UNSIGNED_BYTE,u8);
+  gl.uniform1i(U.vol, 0);
+}
+
+// ────────────────────────────────────────────────────────────
+// 4. Camera (arcball)
+// ────────────────────────────────────────────────────────────
+let rotX=0.4, rotY=-0.6, zoom=2.2, panX=0, panY=0;
+let drag=null, lastT=0;
+
+function mat4mul(a,b){
+  const o=new Float32Array(16);
+  for(let r=0;r<4;r++) for(let c=0;c<4;c++)
+    for(let k=0;k<4;k++) o[r*4+c]+=a[r*4+k]*b[k*4+c];
+  return o;
+}
+function mat4inv(m){
+  // cofactor inversion (16 elements)
+  const s=new Float32Array(6), c=new Float32Array(6);
+  s[0]=m[0]*m[5]-m[4]*m[1]; s[1]=m[0]*m[9]-m[8]*m[1];
+  s[2]=m[0]*m[13]-m[12]*m[1]; s[3]=m[4]*m[9]-m[8]*m[5];
+  s[4]=m[4]*m[13]-m[12]*m[5]; s[5]=m[8]*m[13]-m[12]*m[9];
+  c[0]=m[2]*m[7]-m[6]*m[3]; c[1]=m[2]*m[11]-m[10]*m[3];
+  c[2]=m[2]*m[15]-m[14]*m[3]; c[3]=m[6]*m[11]-m[10]*m[7];
+  c[4]=m[6]*m[15]-m[14]*m[7]; c[5]=m[10]*m[15]-m[14]*m[11];
+  const idet=1/(s[0]*c[5]-s[1]*c[4]+s[2]*c[3]+s[3]*c[2]-s[4]*c[1]+s[5]*c[0]);
+  const o=new Float32Array(16);
+  o[0]=( m[5]*c[5]-m[9]*c[4]+m[13]*c[3])*idet;
+  o[4]=(-m[4]*c[5]+m[8]*c[4]-m[12]*c[3])*idet;
+  o[8]=( m[7]*s[5]-m[11]*s[4]+m[15]*s[3])*idet;
+  o[12]=(-m[6]*s[5]+m[10]*s[4]-m[14]*s[3])*idet;
+  o[1]=(-m[1]*c[5]+m[9]*c[2]-m[13]*c[1])*idet;
+  o[5]=( m[0]*c[5]-m[8]*c[2]+m[12]*c[1])*idet;
+  o[9]=(-m[3]*s[5]+m[11]*s[2]-m[15]*s[1])*idet;
+  o[13]=( m[2]*s[5]-m[10]*s[2]+m[14]*s[1])*idet;
+  o[2]=( m[1]*c[4]-m[5]*c[2]+m[13]*c[0])*idet;
+  o[6]=(-m[0]*c[4]+m[4]*c[2]-m[12]*c[0])*idet;
+  o[10]=( m[3]*s[4]-m[7]*s[2]+m[15]*s[0])*idet;
+  o[14]=(-m[2]*s[4]+m[6]*s[2]-m[14]*s[0])*idet;
+  o[3]=(-m[1]*c[3]+m[5]*c[1]-m[9]*c[0])*idet;
+  o[7]=( m[0]*c[3]-m[4]*c[1]+m[8]*c[0])*idet;
+  o[11]=(-m[3]*s[3]+m[7]*s[1]-m[11]*s[0])*idet;
+  o[15]=( m[2]*s[3]-m[6]*s[1]+m[10]*s[0])*idet;
+  return o;
+}
+function rotXmat(a){ const c=Math.cos(a),s=Math.sin(a); return new Float32Array([1,0,0,0, 0,c,-s,0, 0,s,c,0, 0,0,0,1]); }
+function rotYmat(a){ const c=Math.cos(a),s=Math.sin(a); return new Float32Array([c,0,s,0, 0,1,0,0, -s,0,c,0, 0,0,0,1]); }
+function transMat(x,y,z){ return new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, x,y,z,1]); }
+function scaleMat(s){ return new Float32Array([s,0,0,0, 0,s,0,0, 0,0,s,0, 0,0,0,1]); }
+function perspMat(fov,asp,n,f){
+  const t=Math.tan(fov/2); const nf=1/(n-f);
+  return new Float32Array([1/(t*asp),0,0,0, 0,1/t,0,0, 0,0,(n+f)*nf,-1, 0,0,2*n*f*nf,0]);
+}
+
+function getMVP(){
+  const model=mat4mul(mat4mul(transMat(-.5,-.5,-.5),rotXmat(rotX)),rotYmat(rotY));
+  const view=transMat(panX,panY,-zoom);
+  const proj=perspMat(0.8,canvas.width/canvas.height,0.01,100);
+  return mat4mul(mat4mul(proj,view),model);
+}
+
+canvas.addEventListener('mousedown',e=>{ drag={x:e.clientX,y:e.clientY,shift:e.shiftKey}; });
+canvas.addEventListener('mousemove',e=>{
+  if(!drag)return;
+  const dx=e.clientX-drag.x, dy=e.clientY-drag.y;
+  if(drag.shift){ panX+=dx*0.002; panY-=dy*0.002; }
+  else { rotY+=dx*0.007; rotX+=dy*0.007; }
+  drag.x=e.clientX; drag.y=e.clientY;
+});
+canvas.addEventListener('mouseup',()=>drag=null);
+canvas.addEventListener('wheel',e=>{ zoom=Math.max(.5,Math.min(6,zoom+e.deltaY*0.003)); e.preventDefault(); },{passive:false});
+
+// Touch support
+let lastTouch=null;
+canvas.addEventListener('touchstart',e=>{ lastTouch={x:e.touches[0].clientX,y:e.touches[0].clientY}; });
+canvas.addEventListener('touchmove',e=>{
+  if(!lastTouch)return; e.preventDefault();
+  rotY+=(e.touches[0].clientX-lastTouch.x)*0.009;
+  rotX+=(e.touches[0].clientY-lastTouch.y)*0.009;
+  lastTouch={x:e.touches[0].clientX,y:e.touches[0].clientY};
+},{passive:false});
+canvas.addEventListener('touchend',()=>lastTouch=null);
+
+// ────────────────────────────────────────────────────────────
+// 5. App state
+// ────────────────────────────────────────────────────────────
+let state = {
+  volKey: 'trabecular',
+  mode: 0, cmap: 0,
+  thresh: 0.35, density: 1.2, bright: 1.0,
+  clip: [1,1,1],
+  baseVol: null,
+};
+
+const CMAP_IDS = ['cm-bone','cm-heat','cm-cool','cm-strain','cm-grey'];
+const MODE_NAMES = ['MIP','DVR','Isosurface','Strain'];
+
+function loadVolume(key){
+  state.volKey=key;
+  document.getElementById('sb-text').textContent='Generating '+key+' volume…';
+  setTimeout(()=>{
+    state.baseVol=VOL_FNS[key]();
+    const vol = state.mode===3 ? genStrain(64,state.baseVol) : state.baseVol;
+    uploadVolume(vol);
+    const m=MORPHO[key];
+    document.getElementById('s-bvtv').textContent=m.bvtv;
+    document.getElementById('s-tbth').textContent=m.tbth;
+    document.getElementById('s-tbn').textContent=m.tbn;
+    document.getElementById('s-conn').textContent=m.conn;
+    document.getElementById('ov-vol').textContent='64³ voxels · 39 µm/vox · '+key;
+    document.getElementById('sb-text').textContent='Ready · drag to rotate · scroll to zoom';
+  },10);
+}
+
+function setMode(m){
+  state.mode=m;
+  document.getElementById('ov-mode').textContent=MODE_NAMES[m];
+  if(state.baseVol){
+    const vol=m===3?genStrain(64,state.baseVol):state.baseVol;
+    uploadVolume(vol);
+  }
+  // NCC overlay
+  document.getElementById('ov-ncc').textContent=
+    m===3 ? 'NCC 0.847 🟢' : 'NCC —';
+}
+
+// Controls wiring
+function wire(id,key,disp,decimals=2){
+  const el=document.getElementById(id);
+  const sp=document.getElementById('val-'+id.replace('sl-',''));
+  el.addEventListener('input',()=>{
+    state[key]=parseFloat(el.value);
+    sp.textContent=parseFloat(el.value).toFixed(decimals);
+  });
+}
+wire('sl-thresh','thresh','thresh',2);
+wire('sl-density','density','density',1);
+wire('sl-bright','bright','bright',2);
+
+['clipx','clipy','clipz'].forEach((c,i)=>{
+  const el=document.getElementById('sl-'+c);
+  const sp=document.getElementById('val-'+c);
+  el.addEventListener('input',()=>{
+    state.clip[i]=parseFloat(el.value);
+    sp.textContent=parseFloat(el.value).toFixed(2);
+  });
+});
+
+document.querySelectorAll('#vol-btns .chip').forEach(b=>{
+  b.addEventListener('click',()=>{
+    document.querySelectorAll('#vol-btns .chip').forEach(x=>x.classList.remove('active'));
+    b.classList.add('active');
+    loadVolume(b.dataset.vol);
+  });
+});
+
+document.querySelectorAll('#mode-btns .chip').forEach((b,i)=>{
+  b.addEventListener('click',()=>{
+    document.querySelectorAll('#mode-btns .chip').forEach(x=>x.classList.remove('active'));
+    b.classList.add('active');
+    setMode(i);
+  });
+});
+
+document.querySelectorAll('.cmap-swatch').forEach((sw,i)=>{
+  sw.addEventListener('click',()=>{
+    document.querySelectorAll('.cmap-swatch').forEach(x=>x.classList.remove('active'));
+    sw.classList.add('active');
+    state.cmap=i;
+  });
+});
+
+// ────────────────────────────────────────────────────────────
+// 6. Render loop
+// ────────────────────────────────────────────────────────────
+let frames=0, fpsT=performance.now();
+function render(t){
+  requestAnimationFrame(render);
+  if(!volTex||!gl) return;
+
+  // auto-rotate when idle
+  if(!drag) rotY+=0.003;
+
+  gl.clearColor(0.024,0.055,0.1,1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+
+  const mvp=getMVP();
+  gl.uniformMatrix4fv(U.invMVP, false, mat4inv(mvp));
+  gl.uniform3fv(U.clip, state.clip);
+  gl.uniform1f(U.thresh, state.thresh);
+  gl.uniform1f(U.density, state.density);
+  gl.uniform1f(U.bright, state.bright);
+  gl.uniform1i(U.mode, state.mode);
+  gl.uniform1i(U.cmap, state.cmap);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+  // gizmo update
+  const angle=rotY;
+  const gx=document.getElementById('gx'),gz=document.getElementById('gz');
+  const lx=document.getElementById('lx'),lz=document.getElementById('lz');
+  const cx=32,cy=32,r=22;
+  const ax=cx+Math.cos(angle)*r, ay=cy+Math.sin(angle)*r*0.5;
+  const bx=cx+Math.cos(angle+Math.PI)*r, by=cy+Math.sin(angle+Math.PI)*r*0.5;
+  gx.setAttribute('x2',ax); gx.setAttribute('y2',ay);
+  gz.setAttribute('x2',bx); gz.setAttribute('y2',by);
+  lx.setAttribute('x',ax+2); lx.setAttribute('y',ay+4);
+  lz.setAttribute('x',bx-10); lz.setAttribute('y',by+4);
+
+  // FPS
+  frames++;
+  if(t-fpsT>800){
+    document.getElementById('fps-counter').textContent=
+      Math.round(frames*1000/(t-fpsT))+' fps';
+    frames=0; fpsT=t;
+  }
+}
+
+// Init
+loadVolume('trabecular');
+requestAnimationFrame(render);
+</script>

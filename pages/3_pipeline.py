@@ -55,6 +55,14 @@ try:
 except ImportError:
     HAS_ALIGN = False
 
+try:
+    import sys as _sys, pathlib as _pl
+    _sys.path.insert(0, str(_pl.Path(__file__).resolve().parent.parent))
+    from trabecular.quantum import SIMILARITY_BACKENDS, BACKEND_STATUS
+    HAS_BACKENDS = True
+except Exception:
+    HAS_BACKENDS = False
+
 st.set_page_config(page_title="Pipeline", page_icon="🔬", layout="wide")
 from ui_style import inject_css, page_header
 inject_css()
@@ -63,6 +71,30 @@ page_header(
     subtitle="Generate → Analyse → Load → Compare · Grid-aligned DVC field comparison.",
     label="Stage 4 · Compare",
     color="#E85D3A",
+)
+
+# ── Pipeline progress indicator ────────────────────────────────
+def _pipeline_badge(label, done, key=None):
+    color = "#27ae60" if done else "#95a5a6"
+    icon  = "✅" if done else "⬜"
+    return f'''<span style="display:inline-block;margin:2px 6px;padding:3px 10px;
+        border-radius:12px;background:{color};color:#fff;font-size:0.78rem;
+        font-weight:600;">{icon} {label}</span>'''
+
+_steps = [
+    ("Scan loaded",        "real_volume" in st.session_state or "d2im_scan" in st.session_state),
+    ("ROI detected",       "real_bone_mask_trabecular" in st.session_state),
+    ("Volume generated",   "bone_volume" in st.session_state),
+    ("FE solved",          "pipeline_fe" in st.session_state),
+    ("Strain registered",  st.session_state.get("strain_registered", False)),
+    ("Ready to compare",   "pipeline_fe" in st.session_state and "strain_volume_3d" in st.session_state),
+]
+_badges = " ".join(_pipeline_badge(l, d) for l, d in _steps)
+st.markdown(
+    f'''<div style="background:#f0f2f6;border-radius:8px;padding:8px 12px;margin-bottom:12px;">
+    <span style="font-size:0.8rem;color:#666;margin-right:6px;">Pipeline state:</span>
+    {_badges}</div>''',
+    unsafe_allow_html=True,
 )
 
 
@@ -353,6 +385,134 @@ with tab_syn:
                       help="E_apparent/Voigt × LCC. Higher = more coherent.")
 
         st.divider()
+
+        # ── Mechanics-aware morphometric panel ──────────────────────────────
+        with st.expander("🦴 Mechanics-aware analysis — clinical reference ranges", expanded=False):
+            st.markdown("""
+<style>
+.morph-bar-bg {
+    background:#EAEAEA; border-radius:6px; height:10px; margin:4px 0 2px; overflow:hidden;
+}
+.morph-bar-fill { height:10px; border-radius:6px; transition:width 0.4s; }
+.morph-status-pill {
+    display:inline-block; border-radius:12px; padding:1px 10px;
+    font-size:0.68rem; font-weight:700; letter-spacing:0.05em; color:#fff;
+}
+</style>
+""", unsafe_allow_html=True)
+            st.caption(
+                "Reference ranges from Florez et al. 2026 (Table 1). "
+                "Healthy = HOA cohort; at-risk = HF / osteoporotic cohort."
+            )
+
+            # Clinical ranges: (healthy_lo, healthy_hi, atrisk_threshold, unit, higher_is_better)
+            REFS = {
+                "BV/TV":  (0.15, 0.35, 0.10, "",    True),
+                "Tb.Th":  (100,  200,  80,   "µm",  True),
+                "Tb.N":   (1.5,  2.5,  1.0,  "/mm", True),
+                "Tb.Sp":  (200,  400,  500,  "µm",  False),  # lower is better
+                "Conn.D": (3.0,  8.0,  1.5,  "/mm³",True),
+                "DA":     (0.25, 0.55, None, "",    None),   # moderate is optimal
+            }
+
+            morph_values = {
+                "BV/TV":  morph.get("BVTV"),
+                "Tb.Th":  morph.get("TbTh_um_p50"),
+                "Tb.N":   morph.get("TbN_per_mm"),
+                "Tb.Sp":  morph.get("TbSp_um_p50"),
+                "Conn.D": morph.get("connectivity_density"),
+                "DA":     morph.get("DA"),
+            }
+
+            pw_cols = st.columns(3)
+            for i, (param, (lo, hi, risk, unit, higher)) in enumerate(REFS.items()):
+                val = morph_values.get(param)
+                with pw_cols[i % 3]:
+                    if val is None:
+                        st.markdown(
+                            f"**{param}** &nbsp; <span style='color:#aaa;'>not computed</span>",
+                            unsafe_allow_html=True)
+                        if param == "DA":
+                            st.caption("Enable `include_anisotropy` (slow, ~30 s)")
+                        continue
+
+                    # Classify
+                    if higher is None:  # DA: moderate is best
+                        if lo <= val <= hi:
+                            color, label = "#1D9E75", "optimal"
+                        elif val < lo * 0.7 or val > hi * 1.4:
+                            color, label = "#E85D3A", "outside range"
+                        else:
+                            color, label = "#F5A623", "borderline"
+                    elif higher:
+                        if val >= lo:
+                            color, label = "#1D9E75", "healthy range"
+                        elif val >= risk:
+                            color, label = "#F5A623", "borderline"
+                        else:
+                            color, label = "#E85D3A", "at risk"
+                    else:  # lower is better (Tb.Sp)
+                        if val <= hi:
+                            color, label = "#1D9E75", "healthy range"
+                        elif val <= risk:
+                            color, label = "#F5A623", "borderline"
+                        else:
+                            color, label = "#E85D3A", "at risk"
+
+                    # Bar fill — clamp to range for display
+                    if higher is not None:
+                        bar_max = (risk if risk else hi) * 1.5 if not higher else hi * 1.5
+                        fill_pct = min(100, max(0, val / bar_max * 100)) if bar_max else 50
+                        ref_pct  = lo / bar_max * 100 if bar_max else 33
+                    else:
+                        fill_pct = min(100, val / (hi * 1.5) * 100)
+                        ref_pct  = lo / (hi * 1.5) * 100
+
+                    disp_val = f"{val:.3f}" if val < 10 else f"{val:.0f}"
+                    st.markdown(
+                        f"<b>{param}</b> &nbsp;"
+                        f"<span style='font-size:1.1rem;font-weight:800;color:{color};'>"
+                        f"{disp_val}</span> "
+                        f"<span style='font-size:0.78rem;color:#888;'>{unit}</span> &nbsp;"
+                        f"<span class='morph-status-pill' style='background:{color};'>"
+                        f"{label}</span>"
+                        f"<div class='morph-bar-bg'>"
+                        f"<div class='morph-bar-fill' style='width:{fill_pct:.1f}%;background:{color};'></div>"
+                        f"</div>"
+                        f"<span style='font-size:0.72rem;color:#aaa;'>healthy: {lo}–{hi} {unit}</span>",
+                        unsafe_allow_html=True,
+                    )
+
+            # Strain–morphometry interpretation
+            st.markdown("<br>", unsafe_allow_html=True)
+            if fe.get("apparent_modulus"):
+                e_app   = fe["apparent_modulus"]
+                bvtv    = morph.get("BVTV", 0)
+                voigt   = fe.get("voigt_bound", e_app / max(bvtv, 0.01))
+                eff     = min(e_app / voigt, 1.0) if voigt > 0 else 0.0
+                conn_d  = morph.get("connectivity_density", None)
+
+                if eff >= 0.6:
+                    mech_interp = "🟢 **Mechanically coherent** — load transfers efficiently through a connected trabecular network."
+                elif eff >= 0.35:
+                    mech_interp = "🟡 **Moderate coherence** — some disconnected trabeculae; localised high-strain sites likely."
+                else:
+                    mech_interp = "🔴 **Low mechanical coherence** — sparse or poorly connected network; fracture-initiation risk elevated."
+
+                st.markdown(mech_interp)
+                st.caption(
+                    f"E_apparent = {e_app:.0f} MPa · Voigt bound = {voigt:.0f} MPa · "
+                    f"Efficiency = {eff:.2f}"
+                    + (f" · Conn.D = {conn_d:.4f} /mm³" if conn_d is not None else "")
+                )
+
+                if conn_d is not None and conn_d < 1.5 and bvtv > 0.15:
+                    st.info(
+                        "⚠️ Low connectivity despite adequate BV/TV suggests structurally "
+                        "isolated trabeculae — a known predictor of fracture initiation. "
+                        "This is a key target region for QIC-based strain localisation.",
+                        icon=None,
+                    )
 
         # Slice viewer
         mid_z  = nz_v // 2
@@ -813,6 +973,36 @@ with tab_compare:
     if not has_syn_fe:
         st.warning("Run the synthetic or D²IM pipeline first.")
         st.stop()
+
+    # ── Backend selector ────────────────────────────────────────────────────────
+    if HAS_BACKENDS:
+        with st.expander("⚲️ Similarity backend (DVC slot)", expanded=True):
+            _b_names = list(SIMILARITY_BACKENDS.keys())
+            _b_cols  = st.columns(len(_b_names))
+            for _bc, _bn in zip(_b_cols, _b_names):
+                _status, _note = BACKEND_STATUS.get(_bn, ("unknown", ""))
+                _active = _status == "active"
+                _color  = "#1D9E75" if _active else "#E85D3A"
+                _badge  = "✓ active" if _active else "⚠ optional"
+                _bc.markdown(
+                    f'<div style="border:2px solid {_color};border-radius:10px;'
+                    f'padding:0.6rem 0.8rem;margin-bottom:0.3rem;">'
+                    f'<div style="font-size:0.75rem;font-weight:700;color:{_color};">{_badge}</div>'
+                    f'<div style="font-size:0.85rem;font-weight:600;">{_bn}</div>'
+                    f'<div style="font-size:0.72rem;color:#777;">{_note}</div>'
+                    '</div>',
+                    unsafe_allow_html=True)
+            st.caption(
+                "Each card is a registered :class:`SimilarityBackend`. "
+                "Swap the active backend without touching upstream code: "
+                "`score = SIMILARITY_BACKENDS[name](ref_patch, def_patch)`")
+            _sel = st.selectbox(
+                "Active backend for sub-volume scoring",
+                [n for n, (s, _) in BACKEND_STATUS.items() if s == "active"],
+                key="active_backend",
+            )
+            st.session_state["_active_similarity_backend"] = _sel
+
 
     fe_syn    = st.session_state["pipeline_fe"]
     mask_syn  = st.session_state.get("pipeline_mask")

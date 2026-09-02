@@ -79,10 +79,11 @@ max_depth_plot = st.sidebar.slider(
 # TABS
 # ══════════════════════════════════════════════════════════════
 
-tab_arch, tab_cls, tab_temporal = st.tabs([
+tab_arch, tab_cls, tab_temporal, tab_roadmap = st.tabs([
     "⚛️ Architecture & sweet spot",
     "🦴 Classification demo",
     "📈 Temporal mode",
+    "🗺️ QIC Roadmap",
 ])
 
 
@@ -563,6 +564,93 @@ with tab_temporal:
             "on this task. The entropy plot shows the reservoir building up "
             "entanglement as the sequence progresses."
         )
+
+
+
+# ══════════════════════════════════════════════════════════════
+# TAB 4 — QIC ROADMAP
+# ══════════════════════════════════════════════════════════════
+with tab_roadmap:
+    st.markdown("""
+<style>
+.qic-stage { background:#fff; border-radius:12px; padding:1rem 1.1rem;
+  border-top:4px solid var(--sc,#7F77DD); box-shadow:0 2px 8px rgba(0,0,0,.07);
+  margin-bottom:.5rem; }
+.qic-chip { display:inline-block; background:#EEF2FF; color:#4338CA;
+  border-radius:16px; padding:.15rem .65rem; font-size:.74rem; font-weight:600;
+  margin:.12rem .08rem; }
+</style>""", unsafe_allow_html=True)
+    st.markdown("## ⚛️ Volumetric Quantum Image Correlation (QIC)")
+    st.markdown(
+        "QIC proposes replacing the classical phase-correlation block-matcher in DVC "
+        "with a quantum circuit that computes sub-volume similarity directly in Hilbert space — "
+        "exploiting quantum interference and entanglement to detect deformation signals "
+        "that linear cross-correlation cannot resolve."
+    )
+    st.markdown(
+        '<span class="qic-chip">Quantum extension of DVC</span>'
+        '<span class="qic-chip">Hilbert-space sub-volume matching</span>'
+        '<span class="qic-chip">SimilarityBackend ABC</span>'
+        '<span class="qic-chip">NISQ-ready</span>',
+        unsafe_allow_html=True,
+    )
+    st.divider()
+
+    c1, c2, c3 = st.columns(3)
+    for col, color, icon, stage, title, body in [
+        (c1, "#1D9E75", "🔬", "Stage 1 · Now",
+         "Classical DVC baseline",
+         "Phase-correlation block-matcher with NCC quality score. "
+         "Provides the displacement field that the QRC readout is trained on. "
+         "Integrated via the <code>SimilarityBackend</code> ABC."),
+        (c2, "#378ADD", "⚛️", "Stage 2 · Near-term",
+         "Quantum kernel similarity",
+         "Replace NCC with a ZZ-feature-map quantum kernel. "
+         "Sub-volumes are angle-encoded; kernel entry = |⟨ψ_ref|ψ_mov⟩|². "
+         "Runs on <em>ibm_brisbane</em>-class 127-qubit devices."),
+        (c3, "#7F77DD", "🌐", "Stage 3 · Future",
+         "Full QIC pipeline",
+         "Quantum amplitude estimation for sub-voxel displacement, "
+         "entanglement-enhanced strain sensitivity, and "
+         "joint quantum optimisation of registration + segmentation."),
+    ]:
+        col.markdown(
+            f'''<div class="qic-stage" style="--sc:{color};">
+            <div style="font-size:1.6rem">{icon}</div>
+            <div style="font-size:.68rem;font-weight:700;letter-spacing:.1em;color:{color};
+              text-transform:uppercase;margin:.25rem 0 .1rem">{stage}</div>
+            <div style="font-weight:700;font-size:.95rem;margin-bottom:.35rem">{title}</div>
+            <div style="font-size:.83rem;color:#555;line-height:1.5">{body}</div>
+            </div>''',
+            unsafe_allow_html=True,
+        )
+
+    st.divider()
+    st.markdown("### 🔌 SimilarityBackend integration")
+    st.code('''from similarity_backends import SimilarityBackend
+
+class QuantumKernelSimilarity(SimilarityBackend):
+    """Drop-in replacement for classical NCC in the DVC block-matcher."""
+
+    def compute(self, ref_block: np.ndarray,
+                mov_block: np.ndarray) -> float:
+        # Angle-encode both sub-volumes as quantum states
+        psi_ref = self._encode(ref_block)
+        psi_mov = self._encode(mov_block)
+        # Kernel entry: |<psi_ref | psi_mov>|^2
+        return float(np.abs(np.dot(psi_ref.conj(), psi_mov))**2)
+
+    def _encode(self, block: np.ndarray) -> np.ndarray:
+        flat = block.ravel().astype(np.float64)
+        flat /= (np.linalg.norm(flat) + 1e-12)
+        return flat  # amplitude encoding (statevector)''', language="python")
+
+    st.info(
+        "**How this connects to the rest of the tool:** the DVC page uses a "
+        "`SimilarityBackend` object. Swapping the classical backend for "
+        "`QuantumKernelSimilarity` above is the only code change needed to "
+        "run QIC on any dataset loaded in the Data Loader."
+    )
 
     st.caption(
         "Isabella Florez · University of Greenwich · QRC for trabecular DVC · "

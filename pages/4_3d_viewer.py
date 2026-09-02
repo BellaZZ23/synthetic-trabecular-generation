@@ -7,6 +7,7 @@ Page 4: 3D Viewer & Strain Mapping
   4. Interactive rotation, zoom, and slice controls via Plotly
 """
 import streamlit as st
+import streamlit.components.v1 as components
 import numpy as np
 import plotly.graph_objects as go
 import matplotlib.pyplot as plt
@@ -232,10 +233,11 @@ elif "strain_volume_3d" in st.session_state:
 # TABS
 # ══════════════════════════════════════════════════════════════
 
-tab_3d, tab_load_strain, tab_fe = st.tabs([
+tab_3d, tab_load_strain, tab_fe, tab_webgl = st.tabs([
     "🧊 3D model",
     "📂 Load strain data",
     "⚙️ Run FE & map",
+    "🌐 WebGL Renderer",
 ])
 
 
@@ -260,8 +262,24 @@ with tab_3d:
         source_label = "real"
 
     if bone_mask is None:
-        st.info("No bone volume in session. Generate one in the **Bone Generator** "
-                "or load a scan in the **Data Loader**.")
+        st.info(
+            "No bone volume in session. Generate one in the **Bone Generator**, "
+            "load a scan in the **Data Loader**, or try the built-in demo."
+        )
+        if st.button("🔬 Load demo bone volume", type="primary", key="viewer_demo"):
+            import numpy as _np
+            from scipy.ndimage import gaussian_filter as _gf
+            _rng = _np.random.default_rng(42)
+            _sz  = 48
+            _s   = _gf(_rng.standard_normal((_sz, _sz, _sz)), sigma=2.5)
+            _thr = _np.percentile(_s, 72)
+            _bm  = (_s >= _thr).astype(_np.uint8)
+            st.session_state["bone_volume"] = {
+                "bone_mask": _bm,
+                "voxel_um":  39.0,
+                "bvtv":      float(_bm.mean()),
+            }
+            st.rerun()
     else:
         nz, ny, nx = bone_mask.shape
         voxel_mm = voxel_um / 1000.0
@@ -690,3 +708,32 @@ with tab_fe:
                     title=f"3D bone — {strain_label} (previous run)",
                 )
                 st.plotly_chart(fig, width='stretch')
+
+# ──────────────────────────────────────────────────────────────
+# TAB 4 — WebGL RAY-MARCH VOLUME RENDERER
+# ──────────────────────────────────────────────────────────────
+with tab_webgl:
+    st.subheader("WebGL volume renderer")
+    st.caption(
+        "GPU ray-marched volume renderer — MIP, DVR, isosurface, and strain overlay. "
+        "Drag to rotate · scroll to zoom · Shift+drag to pan."
+    )
+
+    _assets_dir = Path(__file__).resolve().parent.parent / "assets"
+    _html_path  = _assets_dir / "webgl_volume.html"
+
+    if _html_path.exists():
+        _html = _html_path.read_text(encoding="utf-8")
+        _full = (
+            "<!DOCTYPE html><html><head>"
+            "<meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+            + _html +
+            "</head><body></body></html>"
+        )
+        components.html(_full, height=720, scrolling=False)
+    else:
+        st.warning(
+            f"WebGL renderer asset not found at `{_html_path}`. "
+            "Check the `assets/` folder in the project root."
+        )

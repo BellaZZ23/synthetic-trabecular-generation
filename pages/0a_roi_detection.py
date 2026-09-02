@@ -164,10 +164,27 @@ has_scan = "real_volume"    in st.session_state
 has_mask = "real_bone_mask" in st.session_state
 
 if not has_scan or not has_mask:
-    st.warning(
-        "No scan or mask in session. "
-        "Go to **Data Loader** and upload your µCT data first."
+    st.info(
+        "No scan in session yet. Upload data in **Data Loader**, "
+        "or click below to load a synthetic trabecular demo volume."
     )
+    if st.button("🔬 Load synthetic demo volume", type="primary",
+                 use_container_width=False, key="roi_load_demo"):
+        rng = np.random.default_rng(7)
+        sz = 64
+        noise = rng.standard_normal((sz, sz, sz))
+        from scipy.ndimage import gaussian_filter as _gf, binary_dilation as _bd
+        smooth = _gf(noise, sigma=3.0)
+        bvtv_target = 0.28
+        thresh = np.percentile(smooth, (1 - bvtv_target) * 100)
+        bone = (smooth >= thresh).astype(np.uint8)
+        gray = (bone * 180 + rng.integers(0, 40, bone.shape)).astype(np.uint8)
+        shell = _bd(bone, iterations=4).astype(np.uint8)
+        st.session_state["real_volume"]    = gray.astype(np.float32) / 255.0
+        st.session_state["real_bone_mask"] = shell
+        st.session_state["real_voxel_um"]  = 39.0
+        st.session_state["d2im_specimen"]  = "synthetic-demo"
+        st.rerun()
     st.stop()
 
 scan     = st.session_state["real_volume"]
