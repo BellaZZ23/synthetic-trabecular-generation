@@ -339,8 +339,9 @@ def display_sample_gallery(samples, voxel_um):
 st.sidebar.header("Input mode")
 input_mode = st.sidebar.radio(
     "Data source",
-    ["Upload micro-CT scan", "Enter metrics manually"],
-    help="Upload a scan to extract parameters, or type known values directly.",
+    ["Upload micro-CT scan", "Enter metrics manually", "🦴 Zenodo Dataset"],
+    help="Upload a scan, type known values, or fetch an open trabecular bone "
+         "sample directly from Zenodo (record 11061947, CC-BY 4.0).",
 )
 
 # ══════════════════════════════════════════════════════════════
@@ -418,6 +419,188 @@ strain_input_mode = st.sidebar.radio(
 
 uploaded = None
 voxel_um = 39.0
+
+
+
+# ══════════════════════════════════════════════════════════════
+# ZENODO OPEN DATASET — MicroCT Trabecular Bone Samples
+# DOI: 10.5281/zenodo.11061947  (CC-BY 4.0)
+# ══════════════════════════════════════════════════════════════
+if input_mode == "🦴 Zenodo Dataset":
+    st.markdown("""
+<div style="background:linear-gradient(135deg,#1a2e42,#142236);
+            border:1px solid rgba(255,255,255,0.08);border-radius:10px;
+            padding:14px 18px;margin-bottom:1rem">
+  <div style="font-size:0.62rem;font-weight:700;letter-spacing:0.14em;
+              text-transform:uppercase;color:#1D9E75;margin-bottom:4px">
+    Open Dataset · CC-BY 4.0
+  </div>
+  <div style="font-size:1.05rem;font-weight:700;color:#F0EDE8;margin-bottom:4px">
+    MicroCT Trabecular Bone Samples
+  </div>
+  <div style="font-size:0.8rem;color:#8FA3B8">
+    Xradia µCT · <strong>17.59 µm</strong> voxel · 100×100×100 px ·
+    Tb.Th & Tb.Sp distance transforms included<br>
+    <a href="https://zenodo.org/records/11061947" target="_blank"
+       style="color:#378ADD">zenodo.org/records/11061947</a>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+    # ── Sample catalogue ───────────────────────────────────────────────────
+    # REF = reference (healthy-ish), BML = bone marrow lesion
+    _CATALOGUE = {
+        # sample_id : (cohort_label, file_prefix)
+        "001 (REF)": ("REF", "BMLPL_001_REF"),
+        "002 (REF)": ("REF", "BMLPL_002_REF"),
+        "003 (REF)": ("REF", "BMLPL_003_REF"),
+        "003 (BML)": ("BML", "BMLPL_003_BML"),
+        "004 (REF)": ("REF", "BMLPL_004_REF"),
+        "005 (REF)": ("REF", "BMLPL_005_REF"),
+        "007 (REF)": ("REF", "BMLPL_007_REF"),
+        "008 (REF)": ("REF", "BMLPL_008_REF"),
+        "009 (BML)": ("BML", "BMLPL_009_BML"),
+    }
+    _FILE_TYPES = {
+        "SEG_SUB — binary segmentation (~2 MB)": "SEG_SUB",
+        "dt_py — Python Tb.Th distance transform (~8 MB)": "dt_py",
+        "inv_dt_py — Python Tb.Sp distance transform (~8 MB)": "inv_dt_py",
+        "DT_THICK_CONVERT — IPL Tb.Th map (~8 MB)": "DT_THICK_CONVERT",
+        "DT_SP_CONVERT — IPL Tb.Sp map (~8 MB)": "DT_SP_CONVERT",
+    }
+    _BASE_URL = "https://zenodo.org/records/11061947/files"
+
+    zcol1, zcol2 = st.columns(2)
+    with zcol1:
+        z_sample = st.selectbox("Sample", list(_CATALOGUE.keys()), key="zen_sample")
+    with zcol2:
+        z_ftype_label = st.selectbox("File type", list(_FILE_TYPES.keys()), key="zen_ftype")
+
+    cohort, prefix = _CATALOGUE[z_sample]
+    ftype_key = _FILE_TYPES[z_ftype_label]
+    fname = f"{prefix}_{ftype_key}.nii"
+    url   = f"{_BASE_URL}/{fname}?download=1"
+
+    st.caption(f"File: `{fname}`")
+    st.code(url, language="text")
+
+    z_info = st.empty()
+    if st.button("⬇️ Download & load into session", type="primary",
+                 key="zen_download"):
+        import urllib.request, tempfile, os
+        _VOXEL_UM = 17.59
+
+        z_info.info(f"Downloading `{fname}` from Zenodo…")
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".nii", delete=False) as tf:
+                tmp_path = tf.name
+
+            _headers = {"User-Agent": "synthetic-trabeculae-app/1.0"}
+            req = urllib.request.Request(url, headers=_headers)
+            with urllib.request.urlopen(req, timeout=120) as resp,                  open(tmp_path, "wb") as fout:
+                total = int(resp.headers.get("Content-Length", 0))
+                done  = 0
+                chunk = 65536
+                bar   = st.progress(0, text="Downloading…")
+                while True:
+                    block = resp.read(chunk)
+                    if not block:
+                        break
+                    fout.write(block)
+                    done += len(block)
+                    if total:
+                        pct = min(done / total, 1.0)
+                        bar.progress(pct, text=f"{done//1024} / {total//1024} kB")
+            bar.progress(1.0, text="Download complete")
+
+            # ── Read NIfTI ────────────────────────────────────────────────
+            try:
+                import nibabel as nib
+                img  = nib.load(tmp_path)
+                data = np.asarray(img.dataobj, dtype=np.float32)
+            except ImportError:
+                # fallback: raw gzip+struct parse for simple NIfTI-1
+                import struct, gzip
+                opener = gzip.open if tmp_path.endswith(".gz") else open
+                with opener(tmp_path, "rb") as fh:
+                    hdr  = fh.read(348)
+                    dim  = struct.unpack_from("<8h", hdr, 40)
+                    nx, ny, nz = int(dim[1]), int(dim[2]), int(dim[3])
+                    fh.seek(352)
+                    raw = fh.read()
+                data = np.frombuffer(raw, dtype=np.float32).reshape(nz, ny, nx)
+
+            os.unlink(tmp_path)
+
+            # ── Push into session ─────────────────────────────────────────
+            data_norm = data.astype(np.float32)
+            if data_norm.max() > 1.0:
+                data_norm = data_norm / data_norm.max()
+
+            if ftype_key == "SEG_SUB":
+                # binary segmentation → bone mask + grey volume
+                mask = (data > 0.5).astype(np.uint8)
+                grey = (mask * 200).astype(np.float32) / 255.0
+                st.session_state["real_bone_mask"] = mask
+                st.session_state["real_volume"]    = grey
+                st.session_state["real_voxel_um"]  = _VOXEL_UM
+                st.session_state["d2im_specimen"]  = f"zenodo-{z_sample}"
+                bvtv = float(mask.mean())
+                z_info.success(
+                    f"✅ Loaded `{fname}` — mask shape {mask.shape}, "
+                    f"BV/TV = {bvtv:.3f}, voxel = {_VOXEL_UM} µm"
+                )
+            else:
+                # distance-transform volume → store as grey + raw DT
+                st.session_state["real_volume"]    = data_norm
+                st.session_state["real_voxel_um"]  = _VOXEL_UM
+                st.session_state["d2im_specimen"]  = f"zenodo-{z_sample}"
+                st.session_state["zenodo_dt_volume"]  = data
+                st.session_state["zenodo_dt_label"]   = ftype_key
+                z_info.success(
+                    f"✅ Loaded `{fname}` — shape {data.shape}, "
+                    f"range [{data.min():.2f}, {data.max():.2f}] µm, "
+                    f"voxel = {_VOXEL_UM} µm"
+                )
+
+            st.rerun()
+
+        except Exception as _ze:
+            z_info.error(f"Download failed: {_ze}")
+
+    # ── Show what's already loaded ──────────────────────────────────────────
+    if st.session_state.get("d2im_specimen", "").startswith("zenodo"):
+        spec = st.session_state["d2im_specimen"]
+        vol  = st.session_state.get("real_volume")
+        mask = st.session_state.get("real_bone_mask")
+        st.success(f"Session has **{spec}** loaded")
+        if mask is not None:
+            mc1, mc2, mc3 = st.columns(3)
+            mc1.metric("Shape", "×".join(str(d) for d in mask.shape))
+            mc2.metric("BV/TV", f"{mask.mean():.3f}")
+            mc3.metric("Voxel", "17.59 µm")
+
+            # quick mid-slice preview
+            mid = mask.shape[0] // 2
+            import matplotlib.pyplot as _plt
+            _fig, _ax = _plt.subplots(figsize=(4,4))
+            _ax.imshow(mask[mid].T, cmap="bone", origin="lower")
+            _ax.set_title(f"z = {mid} (segmentation)", fontsize=9)
+            _ax.axis("off")
+            st.pyplot(_fig); _plt.close()
+        elif vol is not None:
+            dt_lbl = st.session_state.get("zenodo_dt_label", "volume")
+            mc1, mc2 = st.columns(2)
+            mc1.metric("Shape", "×".join(str(d) for d in vol.shape))
+            mc2.metric("Field", dt_lbl)
+
+    st.markdown("---")
+    st.caption(
+        "Dataset: Kroker et al. (2024) · "
+        "[10.5281/zenodo.11061947](https://doi.org/10.5281/zenodo.11061947) · "
+        "CC-BY 4.0 · Xradia µCT · 17.59 µm · 100³"
+    )
+
 
 if input_mode == "Upload micro-CT scan":
     st.sidebar.header("Upload reference image")
