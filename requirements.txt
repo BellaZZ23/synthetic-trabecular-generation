@@ -1,4 +1,4 @@
-﻿streamlit
+streamlit
 numpy<2
 scikit-image==0.22.0
 matplotlib
@@ -7,3 +7,11 @@ tifffile
 scipy
 imageio
 pillow
+
+# --- Optional / quantum extras ---
+# Install these to enable UMAP-based similarity and t-SNE reduction:
+#   pip install umap-learn scikit-learn
+umap-learn
+scikit-learn
+# Quantum kernel backend (needs companion QKSVM repo at $QKSVM_PATH):
+#   pip install qiskit qiskit-machine-learning
