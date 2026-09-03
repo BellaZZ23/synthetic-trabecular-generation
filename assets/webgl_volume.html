@@ -580,7 +580,7 @@ function uploadVolume(data, sz=64){
 // ────────────────────────────────────────────────────────────
 // 4. Camera (arcball)
 // ────────────────────────────────────────────────────────────
-let rotX=0.4, rotY=-0.6, zoom=2.2, panX=0, panY=0;
+let rotX=0.4, rotY=-0.6, zoom=3.5, panX=0, panY=0;
 let drag=null, lastT=0;
 
 function mat4mul(a,b){
@@ -643,7 +643,7 @@ canvas.addEventListener('mousemove',e=>{
   drag.x=e.clientX; drag.y=e.clientY;
 });
 canvas.addEventListener('mouseup',()=>drag=null);
-canvas.addEventListener('wheel',e=>{ zoom=Math.max(.5,Math.min(6,zoom+e.deltaY*0.003)); e.preventDefault(); },{passive:false});
+canvas.addEventListener('wheel',e=>{ zoom=Math.max(.3,Math.min(12,zoom+e.deltaY*0.005)); e.preventDefault(); },{passive:false});
 
 // Touch support
 let lastTouch=null;

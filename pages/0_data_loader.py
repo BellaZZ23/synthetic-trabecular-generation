@@ -453,7 +453,6 @@ if input_mode == "🦴 Zenodo Dataset":
         # sample_id : (cohort_label, file_prefix)
         "001 (REF)": ("REF", "BMLPL_001_REF"),
         "002 (REF)": ("REF", "BMLPL_002_REF"),
-        "003 (REF)": ("REF", "BMLPL_003_REF"),
         "003 (BML)": ("BML", "BMLPL_003_BML"),
         "004 (REF)": ("REF", "BMLPL_004_REF"),
         "005 (REF)": ("REF", "BMLPL_005_REF"),
@@ -478,7 +477,10 @@ if input_mode == "🦴 Zenodo Dataset":
 
     cohort, prefix = _CATALOGUE[z_sample]
     ftype_key = _FILE_TYPES[z_ftype_label]
-    fname = f"{prefix}_{ftype_key}.nii"
+    if ftype_key == "SEG_SUB":
+        fname = f"{prefix}_17_SEG_SUB.nii"
+    else:
+        fname = f"{prefix}_17_SEG_SUB_{ftype_key}.nii"
     url   = f"{_BASE_URL}/{fname}?download=1"
 
     st.caption(f"File: `{fname}`")

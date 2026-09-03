@@ -225,8 +225,8 @@ fe_timeout_s = int(st.sidebar.number_input(
     help="Wall-clock budget for the solver. Returns partial results if exceeded.",
 ))
 st.sidebar.caption(
-    f"Estimated solve: ~{n_load_steps * 15}–{n_load_steps * 45} s "
-    f"(linear · small volume)"
+    f"Estimated solve: ~{n_load_steps * 2}–{n_load_steps * 15} min "
+    f"(varies with mesh density)"
 )
 
 if load_type == "torque":
