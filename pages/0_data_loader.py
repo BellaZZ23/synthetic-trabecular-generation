@@ -822,6 +822,29 @@ if input_mode == "Upload micro-CT scan" and uploaded:
 
 if volume is not None:
     volume = normalise_to_uint8(volume)
+
+    # ── Axis reorientation (fix scans loaded with wrong axis order) ──
+    _AXIS_OPTIONS = {
+        "Z slices, Y rows, X cols  (default)": None,
+        "Swap Z↔X  (long axis along X → correct to Z)": (2, 1, 0),
+        "Swap Z↔Y  (long axis along Y → correct to Z)": (1, 0, 2),
+        "Rotate 90° in ZX  → (X, Y, Z)": (2, 0, 1),
+        "Rotate 90° in ZY  → (Y, X, Z)": (0, 2, 1),
+    }
+    ax_choice = st.sidebar.selectbox(
+        "Volume axis order",
+        list(_AXIS_OPTIONS.keys()),
+        index=0,
+        key="vol_axis_order",
+        help=(
+            "If your z-slice shows the specimen sideways (full bone length visible), "
+            "choose 'Swap Z↔X' to correct the orientation."
+        ),
+    )
+    _transpose = _AXIS_OPTIONS[ax_choice]
+    if _transpose is not None:
+        volume = np.transpose(volume, _transpose)
+
     nz, ny, nx = volume.shape
     st.success(f"Loaded volume: {nx}×{ny}×{nz} voxels, voxel size = {voxel_um:.1f} µm")
 
