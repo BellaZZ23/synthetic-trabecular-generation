@@ -33,6 +33,8 @@ from ui_style import inject_css, page_header, section_label
 
 st.set_page_config(page_title="Foam materials", page_icon="🧽", layout="wide")
 inject_css()
+from ui_style import qic_pipeline_sidebar
+qic_pipeline_sidebar()
 page_header(
     title="Foam materials",
     subtitle="Synthetic generation · morphometrics · Gibson-Ashby mechanics · micro-CT import",

@@ -21,6 +21,8 @@ st.set_page_config(page_title="3D viewer", page_icon="🧊", layout="wide")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from ui_style import inject_css, page_header
 inject_css()
+from ui_style import qic_pipeline_sidebar
+qic_pipeline_sidebar()
 page_header(
     title="3D viewer & strain mapping",
     subtitle="Interactive 3D bone surface — map strain and displacement fields onto geometry.",

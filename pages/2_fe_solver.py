@@ -28,6 +28,8 @@ st.set_page_config(page_title="FE solver", page_icon="⚙️", layout="wide")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from ui_style import inject_css, page_header
 inject_css()
+from ui_style import qic_pipeline_sidebar
+qic_pipeline_sidebar()
 page_header(
     title="Micro-FE solver",
     subtitle="Uniaxial compression, tension, and torque — with strain field extraction and apparent modulus.",
@@ -205,6 +207,27 @@ E_bone = st.sidebar.number_input("E_tissue (MPa)", value=_E_def, step=500.0)
 nu     = st.sidebar.number_input("Poisson ratio",
     value=_MAT[_mat]["nu"] if _MAT[_mat]["nu"] is not None else 0.30,
     step=0.05, min_value=0.0, max_value=0.49)
+
+st.sidebar.markdown(
+    '<div style="font-size:0.60rem;font-weight:700;letter-spacing:0.12em;'
+    'text-transform:uppercase;color:#9ca3af;margin:10px 0 4px">Solver timing</div>',
+    unsafe_allow_html=True,
+)
+n_load_steps = int(st.sidebar.number_input(
+    "Load increments", min_value=1, max_value=20, value=1, step=1,
+    key="fe_load_steps",
+    help="Split applied strain into N quasi-static increments. "
+         "1 = single linear solve (fastest). 3–5 for nonlinear convergence.",
+))
+fe_timeout_s = int(st.sidebar.number_input(
+    "Time limit (s)", min_value=10, max_value=600, value=120, step=10,
+    key="fe_timeout_s",
+    help="Wall-clock budget for the solver. Returns partial results if exceeded.",
+))
+st.sidebar.caption(
+    f"Estimated solve: ~{n_load_steps * 15}–{n_load_steps * 45} s "
+    f"(linear · small volume)"
+)
 
 if load_type == "torque":
     strain_deg = st.sidebar.slider("Rotation (deg)", 0.1, 5.0, 0.57, 0.01)

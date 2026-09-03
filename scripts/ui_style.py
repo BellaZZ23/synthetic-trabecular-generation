@@ -272,3 +272,103 @@ def sidebar_nav_sections() -> None:
 """,
         unsafe_allow_html=True,
     )
+
+
+def qic_pipeline_sidebar() -> None:
+    """
+    Persistent QIC journey tracker rendered in every page sidebar.
+    Reads st.session_state to colour each step live.
+    Call once per page after inject_css().
+    """
+    import streamlit as st
+
+    ss = st.session_state
+
+    # ── step definitions (label, session-state key or callable) ──
+    steps = [
+        ("📂 Data loaded",
+         lambda s: "real_volume" in s or "d2im_scan" in s or "bone_volume" in s),
+        ("🔍 ROI detected",
+         lambda s: "real_bone_mask" in s or "real_bone_mask_trabecular" in s),
+        ("🧬 Volume generated",
+         lambda s: "bone_volume" in s),
+        ("⚙️  FE solved",
+         lambda s: "pipeline_fe" in s),
+        ("📐 Strain registered",
+         lambda s: s.get("strain_registered", False)),
+        ("🧊 3D visualised",
+         lambda s: "mesh_verts" in s),
+        ("⚛️  QRC features",
+         lambda s: "qrc_features" in s or "qrc_accuracy" in s),
+        ("🔬 QIC ready",
+         lambda s: ("pipeline_fe" in s or "qrc_accuracy" in s)
+                   and ("bone_volume" in s or "real_volume" in s)),
+    ]
+
+    done_count = sum(1 for _, fn in steps if fn(ss))
+
+    st.sidebar.markdown("---")
+
+    # ── compact progress bar ──
+    pct = int(done_count / len(steps) * 100)
+    bar_fill = "#1D9E75" if pct == 100 else "#378ADD"
+    st.sidebar.markdown(
+        f"""<div style="margin-bottom:6px">
+  <div style="display:flex;justify-content:space-between;
+              font-size:0.62rem;color:#888;margin-bottom:3px">
+    <span style="font-weight:700;letter-spacing:0.1em;text-transform:uppercase">
+      QIC Journey</span>
+    <span style="color:{bar_fill};font-weight:600">{pct}%</span>
+  </div>
+  <div style="background:#e5e7eb;border-radius:4px;height:5px;overflow:hidden">
+    <div style="background:{bar_fill};width:{pct}%;height:5px;
+                border-radius:4px;transition:width .4s"></div>
+  </div>
+</div>""",
+        unsafe_allow_html=True,
+    )
+
+    # ── step list ──
+    rows_html = ""
+    for label, fn in steps:
+        done = fn(ss)
+        dot  = f'<span style="color:#1D9E75;font-size:0.85rem">●</span>' if done                else f'<span style="color:#d1d5db;font-size:0.85rem">○</span>'
+        txt_col = "#374151" if done else "#9ca3af"
+        rows_html += (
+            f'<div style="display:flex;align-items:center;gap:7px;'
+            f'padding:3px 0;font-size:0.76rem;color:{txt_col}">'
+            f'{dot} {label}</div>'
+        )
+
+    st.sidebar.markdown(
+        f'<div style="line-height:1.5">{rows_html}</div>',
+        unsafe_allow_html=True,
+    )
+
+    # ── what to do next ──
+    next_labels = [lbl for lbl, fn in steps if not fn(ss)]
+    if next_labels:
+        nxt = next_labels[0]
+        st.sidebar.markdown(
+            f'<div style="margin-top:6px;font-size:0.68rem;color:#6b7280">'
+            f'▶ Next: <span style="color:#378ADD;font-weight:600">{nxt}</span></div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.sidebar.success("🎉 QIC pipeline complete!")
+
+    # ── compact workflow guide ──
+    st.sidebar.markdown("---")
+    st.sidebar.markdown(
+        """<div style="font-size:0.60rem;font-weight:800;letter-spacing:0.14em;
+text-transform:uppercase;color:#9ca3af;margin-bottom:4px">Workflow</div>
+<div style="font-size:0.73rem;color:#6b7280;line-height:2">
+<span style="color:#9ca3af;font-weight:700">① Prepare</span>
+  📂 Data &nbsp;·&nbsp; 🔍 ROI<br>
+<span style="color:#9ca3af;font-weight:700">② Run</span>
+  🧬 Gen &nbsp;·&nbsp; ⚙️ FE &nbsp;·&nbsp; 🔗 Pipeline<br>
+<span style="color:#9ca3af;font-weight:700">③ Analyse</span>
+  ⚛️ QRC &nbsp;·&nbsp; 🔬 QKSVM &nbsp;·&nbsp; 🧽 Foam
+</div>""",
+        unsafe_allow_html=True,
+    )

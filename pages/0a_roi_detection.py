@@ -42,6 +42,8 @@ st.set_page_config(
 )
 from ui_style import inject_css, page_header
 inject_css()
+from ui_style import qic_pipeline_sidebar
+qic_pipeline_sidebar()
 page_header(
     title="ROI detection & preprocessing",
     subtitle="Extract the trabecular compartment from the full bone mask "

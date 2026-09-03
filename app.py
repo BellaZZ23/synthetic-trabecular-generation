@@ -295,34 +295,9 @@ st.caption(
     "github.com/BellaZZ23/synthetic-trabecular-generation"
 )
 
-# ── Sidebar workflow guide ─────────────────────────────────────────────────
-st.sidebar.markdown("---")
-st.sidebar.markdown(
-    """
-<style>
-.wf-section { font-size:0.62rem; font-weight:800; letter-spacing:0.14em;
-  text-transform:uppercase; color:#aaa; margin:0.7rem 0 0.15rem 0; }
-.wf-pages { font-size:0.78rem; color:#555; line-height:1.9; padding-left:0.3rem; }
-</style>
-<div class="wf-section">① Prepare</div>
-<div class="wf-pages">
-  📂 Data Loader<br>
-  🔍 ROI Detection
-</div>
-<div class="wf-section">② Run</div>
-<div class="wf-pages">
-  🧬 Generator<br>
-  ⚙️ FE Solver<br>
-  🔗 Pipeline<br>
-  🧊 3D Viewer
-</div>
-<div class="wf-section">③ Analyse</div>
-<div class="wf-pages">
-  ⚛️ Quantum Reservoir<br>
-  🗺️ QIC Roadmap<br>
-  🔬 QKSVM Results<br>
-  🧽 Foam Materials
-</div>
-""",
-    unsafe_allow_html=True,
-)
+# ── Sidebar QIC journey tracker ────────────────────────────────────────────
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parent / "scripts"))
+from ui_style import qic_pipeline_sidebar
+qic_pipeline_sidebar()

@@ -28,6 +28,8 @@ st.set_page_config(page_title="Bone generator", page_icon="🧬", layout="wide")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from ui_style import inject_css, page_header, info_card
 inject_css()
+from ui_style import qic_pipeline_sidebar
+qic_pipeline_sidebar()
 page_header(
     title="Bone volume generator",
     subtitle="v15.3 zero-crossing Gaussian random field — morphometrically calibrated trabecular bone.",
@@ -52,14 +54,54 @@ else:
     default_bvtv, default_tbth, default_voxel = 0.33, 180, 39.0
 
 
+
+# ══════════════════════════════════════════════════════════════
+# BONE PRESETS (main panel)
+# ══════════════════════════════════════════════════════════════
+st.markdown('<p style="font-size:0.68rem;font-weight:700;letter-spacing:0.14em;'
+            'text-transform:uppercase;color:#aaa;margin-bottom:0.4rem;">'
+            'Bone presets — click to load targets into the sidebar sliders</p>',
+            unsafe_allow_html=True)
+
+_p1, _p2, _p3, _p4 = st.columns(4)
+if _p1.button("🔴 Osteoporotic", use_container_width=True,
+              help="BV/TV 0.12 · Tb.Th 80 µm · low density"):
+    st.session_state["gen_bvtv"] = 0.12
+    st.session_state["gen_tbth"] = 80
+    st.rerun()
+if _p2.button("🟡 Borderline", use_container_width=True,
+              help="BV/TV 0.20 · Tb.Th 120 µm · mild loss"):
+    st.session_state["gen_bvtv"] = 0.20
+    st.session_state["gen_tbth"] = 120
+    st.rerun()
+if _p3.button("🟢 Healthy adult", use_container_width=True,
+              help="BV/TV 0.33 · Tb.Th 180 µm · normal range"):
+    st.session_state["gen_bvtv"] = 0.33
+    st.session_state["gen_tbth"] = 180
+    st.rerun()
+if _p4.button("💪 Dense bone", use_container_width=True,
+              help="BV/TV 0.42 · Tb.Th 220 µm · high density"):
+    st.session_state["gen_bvtv"] = 0.42
+    st.session_state["gen_tbth"] = 220
+    st.rerun()
+
+st.markdown("""
+<div style="background:#f3f9ff;border-radius:10px;padding:0.7rem 1rem;
+            margin-bottom:0.8rem;font-size:0.82rem;color:#444;line-height:1.5;">
+  <b>Morphometric targets</b> drive the generator's calibration loop.
+  Set BV/TV and Tb.Th in the sidebar sliders, or pick a preset above.
+  <span style="color:#888;">BV/TV = bone volume fraction · Tb.Th = trabecular thickness</span>
+</div>
+""", unsafe_allow_html=True)
+
 # ══════════════════════════════════════════════════════════════
 # SIDEBAR
 # ══════════════════════════════════════════════════════════════
 
 # ── Morphometric targets ──
 st.sidebar.header("Morphometric targets")
-target_bvtv    = st.sidebar.slider("Target BV/TV", 0.05, 0.50, default_bvtv, 0.01)
-tbth_um        = st.sidebar.slider("Target Tb.Th (µm)", 80, 300, default_tbth, 5)
+target_bvtv    = st.sidebar.slider("Target BV/TV", 0.05, 0.50, st.session_state.get("gen_bvtv", default_bvtv), 0.01, key="gen_bvtv")
+tbth_um        = st.sidebar.slider("Target Tb.Th (µm)", 80, 300, st.session_state.get("gen_tbth", default_tbth), 5, key="gen_tbth")
 calibrate_tbth = st.sidebar.checkbox(
     "Calibrate Tb.Th (iterative)", value=bool(real_targets),
     help="Iteratively adjusts base_sigma to match target Tb.Th. Slower but more accurate.",

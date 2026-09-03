@@ -66,6 +66,8 @@ except Exception:
 st.set_page_config(page_title="Pipeline", page_icon="🔬", layout="wide")
 from ui_style import inject_css, page_header
 inject_css()
+from ui_style import qic_pipeline_sidebar
+qic_pipeline_sidebar()
 page_header(
     title="Integrated pipeline",
     subtitle="Generate → Analyse → Load → Compare · Grid-aligned DVC field comparison.",

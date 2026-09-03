@@ -28,6 +28,8 @@ from ui_style import inject_css, page_header
 
 st.set_page_config(page_title="Foam DVC experiment", page_icon="📡", layout="wide")
 inject_css()
+from ui_style import qic_pipeline_sidebar
+qic_pipeline_sidebar()
 page_header(
     title="Foam DVC experiment",
     subtitle="In-situ µCT · DVC displacement · FE comparison · Gibson-Ashby calibration",
