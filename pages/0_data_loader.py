@@ -1232,11 +1232,38 @@ if volume is not None:
                         up_noise_sd = st.slider("Noise SD", 0.0, 10.0, 2.0, 0.5, key="up_nsd")
                         up_bg_tex = st.slider("Background texture SD", 0.0, 5.0, 0.5, 0.1, key="up_btex")
 
-                if st.button(f"Generate {up_n_samples} sample(s)", type="primary",
+                # ── Editable targets (guard against stale zero morphometrics) ─
+                st.markdown("**Generation targets** — from measured morphometrics, edit if needed")
+                tov1, tov2, tov3 = st.columns(3)
+                with tov1:
+                    _def_bvtv = float(morph["BVTV"]) if morph.get("BVTV", 0) > 0.005 else 0.33
+                    up_tgt_bvtv = st.number_input(
+                        "Target BV/TV", 0.01, 0.80, _def_bvtv, 0.01, format="%.3f",
+                        key="up_tgt_bvtv",
+                        help="Bone volume fraction. Defaults to measured value.",
+                    )
+                with tov2:
+                    _def_tbth = float(morph["TbTh_um_p50"]) if morph.get("TbTh_um_p50", 0) > 1 else 180.0
+                    up_tgt_tbth = st.number_input(
+                        "Target Tb.Th (µm)", 10.0, 500.0, _def_tbth, 5.0, format="%.0f",
+                        key="up_tgt_tbth",
+                        help="Trabecular thickness median. Defaults to measured value.",
+                    )
+                with tov3:
+                    _meas = morph.get("BVTV", 0)
+                    st.metric("Measured BV/TV", f"{_meas:.3f}",
+                              "override" if abs(up_tgt_bvtv - _meas) > 0.005 else "from scan")
+
+                if up_tgt_bvtv < 0.01:
+                    st.error(
+                        "Target BV/TV is ~0 — generation would produce empty volumes. "
+                        "Click **Measure morphometrics** above first, or set the target manually."
+                    )
+                elif st.button(f"Generate {up_n_samples} sample(s)", type="primary",
                              width='stretch', key="btn_gen_upload"):
                     targets = {
-                        "bvtv": round(morph["BVTV"], 3),
-                        "tbth_um": round(morph["TbTh_um_p50"], 0),
+                        "bvtv": round(up_tgt_bvtv, 3),
+                        "tbth_um": round(up_tgt_tbth, 0),
                         "voxel_um": voxel_um,
                         "nx": nx, "ny": ny, "nz": nz,
                     }
