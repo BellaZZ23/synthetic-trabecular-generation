@@ -25,7 +25,21 @@ CYAN  = "#3ECFB0"
 MUTED = "#7A9EC8"
 
 # ── LOAD YOUR DATA ────────────────────────────────────────────────────────────
-raise NotImplementedError("Replace this block with your data loading code")
+import pandas as pd
+
+df = pd.read_csv(
+    r"C:\Users\Isabella\OneDrive - zeki\Documents\Research\synthetic_trabeculae"
+    r"\output\v8_dataset\features\features_v8.csv"
+)
+
+print("Shape:", df.shape)
+
+# Binarise BV/TV at 0.5 (high / low)
+threshold = 0.5
+X = df.drop(columns=["sample", "bvtv"]).values
+y = (df["bvtv"].values >= threshold).astype(int)
+
+print(f"Class balance: {y.sum()} high / {(1-y).sum()} low  (threshold={threshold})")
 
 # ── SUBSAMPLE & REDUCE ────────────────────────────────────────────────────────
 rng = np.random.default_rng(SEED)
